@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-  const VERSION = '2.0（2026-11-15 楽譜つき）';
+  const VERSION = '2.1（2026-11-15 楽譜のあとのマイク）';
   const $ = (id) => document.getElementById(id);
 
   // ---------- storage ----------
@@ -363,10 +363,12 @@
 
   // ---------- microphone ----------
   let audio = null;
-  async function startMic(onNote, onJudge) {
+  // paused: build everything but leave the microphone off (the score player is sounding);
+  // resumeMic() connects it later without a tap, because the AudioContext was started by this tap
+  async function startMic(onNote, onJudge, paused) {
     stopMic();
     const AC = window.AudioContext || window.webkitAudioContext;
-    const a = { ctx: null, stream: null, det: null, lastMsg: 0, live: false, liveSince: Date.now(), error: '' };
+    const a = { ctx: null, stream: null, det: null, lastMsg: 0, live: false, liveSince: Date.now(), error: '', paused: false };
     audio = a;
     try {
       a.ctx = new AC();
@@ -375,28 +377,31 @@
       a.error = 'このブラウザでは音を調べられません';
       return a;
     }
+    const ctx = a.ctx;
+    a.det = new PianoDetector(ctx.sampleRate, Object.assign({}, SENS[settings.sens] || {}, { onNote }));
+    a.det.onJudge = onJudge || null;
+    let node;
+    try {
+      await ctx.audioWorklet.addModule('tap-worklet.js');
+      node = new AudioWorkletNode(ctx, 'tap', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+      node.port.onmessage = (e) => { a.lastMsg = Date.now(); a.det.push(e.data); };
+    } catch (e) {
+      node = ctx.createScriptProcessor(2048, 1, 1);
+      node.onaudioprocess = (ev) => { a.lastMsg = Date.now(); a.det.push(new Float32Array(ev.inputBuffer.getChannelData(0))); };
+    }
+    const sink = ctx.createGain();
+    sink.gain.value = 0;
+    node.connect(sink); sink.connect(ctx.destination);
+    a.node = node; a.sink = sink;
+    if (audio !== a) return a;
+    if (paused) { a.paused = true; return a; }
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw Object.assign(new Error('no getUserMedia'), { name: 'NoMedia' });
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
+      const stream = await getMic();
       if (audio !== a) { stream.getTracks().forEach((t) => t.stop()); return a; }
       a.stream = stream;
-      const ctx = a.ctx;
-      a.det = new PianoDetector(ctx.sampleRate, Object.assign({}, SENS[settings.sens] || {}, { onNote }));
-      a.det.onJudge = onJudge || null;
-      const src = ctx.createMediaStreamSource(stream);
-      let node;
-      try {
-        await ctx.audioWorklet.addModule('tap-worklet.js');
-        node = new AudioWorkletNode(ctx, 'tap', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
-        node.port.onmessage = (e) => { a.lastMsg = Date.now(); a.det.push(e.data); };
-      } catch (e) {
-        node = ctx.createScriptProcessor(2048, 1, 1);
-        node.onaudioprocess = (ev) => { a.lastMsg = Date.now(); a.det.push(new Float32Array(ev.inputBuffer.getChannelData(0))); };
-      }
-      const sink = ctx.createGain();
-      sink.gain.value = 0;
-      src.connect(node); node.connect(sink); sink.connect(ctx.destination);
-      a.src = src; a.node = node; a.sink = sink;
+      a.src = ctx.createMediaStreamSource(stream);
+      a.src.connect(node);
       if (ctx.state !== 'running') await ctx.resume().catch(() => {});
     } catch (e) {
       const n = e && e.name;
@@ -415,6 +420,36 @@
     try { a.src && a.src.disconnect(); a.node && a.node.disconnect(); a.sink && a.sink.disconnect(); } catch (e) { /* ignore */ }
     try { a.stream && a.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* ignore */ }
     try { a.ctx && a.ctx.close(); } catch (e) { /* ignore */ }
+    setSessionType(navigator, 'auto');
+  }
+
+  // iPad (Safari): the score player sets navigator.audioSession.type = 'playback' to play loudly, and
+  // while any document of the page is 'playback', getUserMedia fails with InvalidStateError.
+  // So before recording: this page asks for 'play-and-record' and the player's frame goes back to 'auto'.
+  function setSessionType(nav, type) {
+    try { if (nav && nav.audioSession && nav.audioSession.type !== type) nav.audioSession.type = type; } catch (e) { /* ignore */ }
+  }
+  function prepareCapture() {
+    setSessionType(navigator, 'play-and-record');
+    if (playerSound) return;   // the player is sounding: leave it alone (the mic is paused then anyway)
+    try {
+      const f = document.querySelector('#scoreView iframe');
+      const nav = f && f.contentWindow && f.contentWindow.navigator;
+      if (nav && nav.audioSession && nav.audioSession.type === 'playback') setSessionType(nav, 'auto');
+    } catch (e) { /* ignore */ }
+  }
+  const MIC = { audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } };
+  async function getMic() {
+    prepareCapture();
+    try {
+      return await navigator.mediaDevices.getUserMedia(MIC);
+    } catch (e) {
+      if (!e || e.name !== 'InvalidStateError') throw e;
+      // the audio session may need a moment to switch: try once more
+      await new Promise((r) => setTimeout(r, 400));
+      prepareCapture();
+      return navigator.mediaDevices.getUserMedia(MIC);
+    }
   }
   // 楽譜の音を鳴らしているあいだはマイクを止める（iPad は録音中だと再生の音が小さくなるため）。
   // AudioContext は動かしたままにして、止めたあとはタップなしでマイクだけつなぎ直す
@@ -426,12 +461,13 @@
     try { a.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* ignore */ }
     a.stream = null;
     a.live = false;
+    setSessionType(navigator, 'auto');   // let the player's 'playback' decide while it sounds
   }
   async function resumeMic() {
     const a = audio;
     if (!a || !a.paused) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
+      const stream = await getMic();
       if (audio !== a || !a.paused) { stream.getTracks().forEach((t) => t.stop()); return; }
       a.stream = stream;
       a.src = a.ctx.createMediaStreamSource(stream);
@@ -440,7 +476,7 @@
       if (a.ctx.state !== 'running') a.ctx.resume().catch(() => {});
     } catch (e) {
       a.paused = false;
-      a.error = 'マイクを再開できませんでした';
+      a.error = `マイクを再開できませんでした（${(e && e.name) || e}）`;
     }
   }
   function micLive() {
@@ -492,8 +528,8 @@
     persistSession(true);
     enterSessionView();
     wake();
-    await startMic(onSessionNote);
-    if (playerSound) pauseMic();
+    await startMic(onSessionNote, null, playerSound);
+    if (playerSound) pauseMic();   // the player started while the microphone was opening
   }
   function enterSessionView() {
     $('sessWho').replaceChildren(...sess.people.map((id) => chip(id)));

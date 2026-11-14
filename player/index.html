@@ -585,8 +585,14 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 3px s
     },
   };
   // 音を鳴らしている／止めたことを、同じサイトの親のページ（練習記録アプリ）に知らせる
+  let hosted = false;   // 練習記録アプリの「楽譜」タブの中で開いている（claude.ai の枠の中ではない）
+  try { hosted = window.parent !== window && window.parent.location.origin === location.origin; } catch (e) {}
   function tellHost(on) {
-    try { if (window.parent !== window) window.parent.postMessage({ type: 'player-sound', on }, location.origin); } catch (e) {}
+    if (!hosted) return;
+    // 止めたら音声を「再生専用」から戻す。そのままだと iPad は親のページでマイクを使えない
+    // （getUserMedia が InvalidStateError になった。2026-11-15）
+    if (!on) { try { if (navigator.audioSession && navigator.audioSession.type === 'playback') navigator.audioSession.type = 'auto'; } catch (e) {} }
+    try { window.parent.postMessage({ type: 'player-sound', on }, location.origin); } catch (e) {}
   }
   let song = SONGS.find((s) => s.key === store.get('player.song')) || SONGS[0];
   let songGen = 0;           // 曲を切りかえるたびに 1 つ増やす（前の曲の読み込みが遅れて届いたら捨てる）
