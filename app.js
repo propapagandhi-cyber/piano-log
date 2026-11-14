@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-  const VERSION = '1.0（2026-11-15）';
+  const VERSION = '1.1（2026-11-15 低音域）';
   const $ = (id) => document.getElementById(id);
 
   // ---------- storage ----------
@@ -8,7 +8,11 @@
   function load(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }
   function save(k, v) { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage blocked */ } }
 
-  const SENS = { strict: { maxDrift: 0.009, minStable: 0.8 }, normal: {}, loose: { maxDrift: 0.015, minStable: 0.7 } };
+  const SENS = {
+    strict: { maxDrift: 0.009, minStable: 0.8, lowDrift: 0.004, lowMinSlope: -4 },
+    normal: {},
+    loose: { maxDrift: 0.015, minStable: 0.7, lowDrift: 0.008, lowMinSlope: -6 },
+  };
   const SENS_LABEL = [['strict', 'きびしめ'], ['normal', 'ふつう'], ['loose', 'ゆるめ']];
   const AUTO_OPTS = [3, 5, 10, 15];
   const GOALS = [0, 10, 15, 20, 30, 45, 60];
@@ -681,7 +685,7 @@
     const t0 = Date.now();
     startMic(null, (ev) => {
       const t = ((Date.now() - t0) / 1000).toFixed(1);
-      if (ev.piano) { nP++; $('tPiano').textContent = nP; log(`${t}秒  ピアノ  (${Math.round(ev.f0 || 0)} Hz)`); }
+      if (ev.piano) { nP++; $('tPiano').textContent = nP; log(`${t}秒  ピアノ${ev.via === 'low' ? '（低音）' : ''}  (${Math.round(ev.f0 || 0)} Hz)`); }
       else { nO++; $('tOther').textContent = nO; log(`${t}秒  ピアノ以外：${REASON[ev.why] || ev.why}`); }
     }).then((a) => {
       if (a.error) $('tInfo').textContent = a.error;
