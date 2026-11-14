@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>ピアノれんしゅう記録</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="れんしゅう">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#f3f5f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#10151d" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@500;700;800&display=swap">
+<style>
+/* Layout: one column (fits iPad Split View at 320 px), cards → start → week → history.
+   Palette: cool paper + ink, one color per player; the keyboard strip is the only ornament. */
+:root {
+  --bg: #f3f5f9;
+  --surface: #ffffff;
+  --ink: #18202e;
+  --muted: #5d687a;
+  --line: #dde3ec;
+  --soft: #e9edf4;
+  --good: #0f9d74;
+  --warn: #c2410c;
+  --p0: #4f5bd5;
+  --p1: #0f9d74;
+  --p2: #e0730b;
+  --p3: #d1437a;
+  --p4: #1e86c6;
+  --key-w: #ffffff;
+  --key-b: #1d2430;
+  --key-line: #c9d1dd;
+  --font: "Hiragino Maru Gothic ProN", "M PLUS Rounded 1c", "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+  --r: 16px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #10151d; --surface: #19212d; --ink: #edf1f7; --muted: #9ba7b9; --line: #2b3546; --soft: #222c3a;
+    --good: #34c79a; --warn: #fb8c4c;
+    --p0: #8d96f2; --p1: #34c79a; --p2: #f59f45; --p3: #ef7aa6; --p4: #5cb6ea;
+    --key-w: #dfe4ec; --key-b: #0b0f15; --key-line: #10151d;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font); font-weight: 500;
+  font-size: 15px; line-height: 1.55; -webkit-text-size-adjust: 100%;
+  padding: env(safe-area-inset-top, 0px) max(16px, env(safe-area-inset-right, 0px)) calc(env(safe-area-inset-bottom, 0px) + 24px) max(16px, env(safe-area-inset-left, 0px));
+}
+[hidden] { display: none !important; }
+button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--p4); outline-offset: 2px; }
+.wrap { max-width: 680px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* keyboard strip (top of the page) and the little keyboard that lights up while practicing */
+.keys { display: block; width: 100%; height: 18px; }
+.keys .w, .mini .w { fill: var(--key-w); stroke: var(--key-line); }
+.keys .b, .mini .b { fill: var(--key-b); }
+header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding-top: 14px; }
+header h1 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: .02em; line-height: 1.2; }
+header .date { color: var(--muted); font-size: 14px; }
+.icon-btn { border: 1px solid var(--line); background: var(--surface); border-radius: 12px; width: 44px; height: 44px; display: grid; place-items: center; flex: none; }
+.icon-btn svg { width: 22px; height: 22px; }
+
+/* players */
+.label { font-size: 13px; color: var(--muted); font-weight: 700; letter-spacing: .06em; margin: 0 0 8px; }
+.people { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; }
+.person { position: relative; border: 2px solid var(--line); background: var(--surface); border-radius: var(--r); padding: 14px 6px 12px;
+  display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; transition: border-color .15s, transform .1s; }
+.person:active { transform: scale(.98); }
+.person[aria-pressed="true"] { border-color: var(--c); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 22%, transparent); }
+.ring { --pct: 0; width: 66px; height: 66px; border-radius: 50%; display: grid; place-items: center;
+  background: conic-gradient(var(--c) calc(var(--pct) * 1%), var(--soft) 0); }
+.ring .face { width: 54px; height: 54px; border-radius: 50%; background: var(--c); color: #fff; display: grid; place-items: center; font-size: 22px; font-weight: 800; }
+.person .name { font-weight: 800; font-size: 16px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.person .today { font-size: 13px; color: var(--muted); }
+.person .today b { color: var(--ink); font-size: 15px; }
+.person .streak { font-size: 12px; color: var(--c); font-weight: 700; min-height: 1.2em; }
+.check { position: absolute; top: 8px; right: 8px; width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line); display: grid; place-items: center; }
+.person[aria-pressed="true"] .check { background: var(--c); border-color: var(--c); }
+.check svg { width: 14px; height: 14px; opacity: 0; }
+.person[aria-pressed="true"] .check svg { opacity: 1; }
+
+.primary { width: 100%; border: 0; border-radius: 18px; background: var(--ink); color: var(--bg); padding: 18px 16px; font-size: 21px; font-weight: 800; letter-spacing: .04em; }
+.primary:disabled { opacity: .35; cursor: default; }
+.primary small { display: block; font-size: 13px; font-weight: 700; opacity: .75; letter-spacing: 0; }
+.hint { color: var(--muted); font-size: 13px; text-align: center; margin: -10px 0 0; }
+
+/* panels */
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; }
+.panel h2 { margin: 0 0 12px; font-size: 16px; font-weight: 800; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.panel h2 span { font-size: 13px; color: var(--muted); font-weight: 700; }
+
+/* week chart */
+.week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; align-items: end; height: 150px; }
+.day { display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; justify-content: flex-end; min-width: 0; }
+.bars { display: flex; gap: 2px; align-items: flex-end; height: 112px; width: 100%; justify-content: center; }
+.bar { width: 9px; max-width: 30%; border-radius: 4px 4px 2px 2px; background: var(--c); min-height: 0; }
+.bar.zero { height: 3px !important; background: var(--soft); }
+.day .dl { font-size: 12px; color: var(--muted); line-height: 1.2; text-align: center; }
+.day.today .dl { color: var(--ink); font-weight: 800; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 12px; font-size: 13px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 10px; height: 10px; border-radius: 3px; background: var(--c); display: inline-block; }
+.legend b { font-weight: 800; }
+
+/* history */
+.hist { display: flex; flex-direction: column; }
+.hrow { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; padding: 9px 0; border-top: 1px solid var(--line); }
+.hrow:first-child { border-top: 0; }
+.hrow .when { font-size: 13px; color: var(--muted); }
+.hrow .who { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 1px 10px 1px 8px; font-size: 13px; font-weight: 700; background: color-mix(in srgb, var(--c) 14%, transparent); color: var(--ink); }
+.chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.hrow .min { font-weight: 800; font-size: 17px; }
+.del { border: 0; background: none; color: var(--muted); padding: 6px; border-radius: 8px; font-size: 13px; }
+.del.sure { color: #fff; background: var(--warn); }
+.empty { color: var(--muted); font-size: 14px; padding: 8px 0; }
+.sync { font-size: 12px; color: var(--muted); text-align: center; }
+.sync.bad { color: var(--warn); }
+.linkish { border: 0; background: none; color: var(--p4); padding: 4px; font-size: 13px; font-weight: 700; text-decoration: underline; }
+
+/* practice screen */
+.session { display: flex; flex-direction: column; gap: 22px; align-items: stretch; padding-top: 18px; }
+.session .who { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; }
+.session .who .chip { font-size: 16px; padding: 4px 14px 4px 10px; }
+.timer { text-align: center; font-size: clamp(64px, 22vw, 110px); font-weight: 800; line-height: 1; letter-spacing: .02em; }
+.timer-sub { text-align: center; color: var(--muted); font-size: 14px; margin-top: -12px; }
+.status { display: flex; align-items: center; gap: 10px; border: 0; width: 100%; text-align: left; border-radius: 14px; padding: 12px 14px; background: var(--soft); font-weight: 700; font-size: 16px; }
+.status .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; }
+.status.on .dot { background: var(--good); box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 50%, transparent); }
+.status.flash .dot { animation: ping .5s ease-out; }
+.status.off { background: color-mix(in srgb, var(--warn) 14%, var(--surface)); color: var(--warn); border: 0; width: 100%; text-align: left; }
+.status.off .dot { background: var(--warn); }
+@keyframes ping { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 60%, transparent); } to { box-shadow: 0 0 0 12px transparent; } }
+.meter { height: 8px; border-radius: 4px; background: var(--soft); overflow: hidden; }
+.meter i { display: block; height: 100%; width: 0; background: var(--muted); border-radius: 4px; transition: width .1s linear; }
+.mini { display: flex; justify-content: center; }
+.mini svg { width: min(300px, 100%); height: auto; }
+.mini .lit { fill: var(--good); transition: fill .05s; }
+.auto { text-align: center; color: var(--muted); font-size: 14px; min-height: 1.5em; }
+.danger { width: 100%; border: 0; border-radius: 18px; background: var(--warn); color: #fff; padding: 18px 16px; font-size: 21px; font-weight: 800; }
+
+/* result */
+.result { text-align: center; display: flex; flex-direction: column; gap: 16px; padding-top: 24px; }
+.result .big { font-size: 64px; font-weight: 800; line-height: 1; }
+.result .big small { font-size: 22px; margin-left: 4px; }
+.result .msg { font-size: 18px; font-weight: 800; }
+.result .note { color: var(--muted); font-size: 14px; }
+.tally { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+.tally div { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 10px; }
+.tally b { display: block; font-size: 20px; }
+.tally .goal { color: var(--good); font-weight: 800; font-size: 13px; }
+
+/* settings */
+dialog { border: 0; padding: 0; background: var(--bg); color: var(--ink); width: 100%; max-width: 680px; max-height: 100%; height: 100%; margin: 0 auto; }
+dialog::backdrop { background: rgb(0 0 0 / .35); }
+.dlg { padding: calc(env(safe-area-inset-top, 0px) + 12px) max(16px, env(safe-area-inset-right, 0px)) calc(env(safe-area-inset-bottom, 0px) + 32px) max(16px, env(safe-area-inset-left, 0px)); display: flex; flex-direction: column; gap: 16px; }
+.dlg-head { display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; background: var(--bg); padding: 6px 0; z-index: 1; }
+.dlg-head h2 { margin: 0; font-size: 20px; font-weight: 800; }
+.ok { border: 0; background: var(--ink); color: var(--bg); border-radius: 12px; padding: 10px 18px; font-weight: 800; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field > span { font-size: 13px; color: var(--muted); font-weight: 700; }
+input[type=text], input[type=url], input[type=number], input[type=date], select {
+  font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; width: 100%; min-width: 0; }
+.prow { display: grid; grid-template-columns: 14px 1fr 110px 36px; gap: 8px; align-items: center; }
+.prow i { width: 14px; height: 14px; border-radius: 50%; background: var(--c); }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg button { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 8px 14px; font-weight: 700; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.small { font-size: 13px; color: var(--muted); margin: 0; }
+.ghost { border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 10px 14px; font-weight: 700; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.testlog { font-size: 12px; color: var(--muted); max-height: 140px; overflow: auto; font-variant-numeric: tabular-nums; }
+.counts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.counts div { background: var(--soft); border-radius: 12px; padding: 10px; text-align: center; }
+.counts b { display: block; font-size: 26px; }
+.guide summary { cursor: pointer; font-weight: 700; color: var(--p4); }
+.guide ol { margin: 10px 0 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
+.toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-weight: 700; font-size: 14px; max-width: calc(100% - 32px); z-index: 10; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <svg class="keys" id="keys" aria-hidden="true" preserveAspectRatio="none"></svg>
+
+  <!-- home -->
+  <main id="home" class="wrap" style="gap:20px">
+    <header>
+      <div>
+        <h1>ピアノれんしゅう</h1>
+        <div class="date" id="today"></div>
+      </div>
+      <button class="icon-btn" id="openSettings" aria-label="設定">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+    </header>
+
+    <section>
+      <p class="label">だれが れんしゅうする？（連弾は ぜんいん えらぶ）</p>
+      <div class="people" id="people"></div>
+    </section>
+
+    <button class="primary" id="start" disabled>れんしゅうスタート<small id="startSub">名前をタップしてえらんでね</small></button>
+    <p class="hint">ピアノの音が <span id="autoMinHint">5</span>分 聞こえないと、自動で終わります</p>
+
+    <section class="panel">
+      <h2>この1週間 <span id="weekRange"></span></h2>
+      <div class="week" id="week"></div>
+      <div class="legend" id="legend"></div>
+    </section>
+
+    <section class="panel">
+      <h2>きろく <button class="linkish" id="addManual">手で追加</button></h2>
+      <form id="manual" class="field" hidden>
+        <div class="row" id="manualWho"></div>
+        <div class="row">
+          <input type="date" id="manualDate" style="flex:1 1 150px" aria-label="日付">
+          <input type="number" id="manualMin" min="1" max="600" placeholder="分" style="flex:0 1 90px" aria-label="分">
+          <button class="ok" type="submit">追加</button>
+        </div>
+      </form>
+      <div class="hist" id="hist"></div>
+    </section>
+    <p class="sync" id="sync"></p>
+  </main>
+
+  <!-- practicing -->
+  <main id="session" class="session" hidden>
+    <div class="who" id="sessWho"></div>
+    <div class="timer num" id="timer">0:00</div>
+    <div class="timer-sub" id="timerSub">スタートしてからの時間</div>
+    <button class="status" id="micStatus" type="button"><span class="dot"></span><span id="micText">マイクを準備しています…</span></button>
+    <div class="meter" aria-hidden="true"><i id="meter"></i></div>
+    <div class="mini" aria-hidden="true"><svg viewBox="0 0 210 70" id="mini"></svg></div>
+    <div class="auto num" id="autoInfo"></div>
+    <button class="danger" id="stop">れんしゅう終了</button>
+  </main>
+
+  <!-- result -->
+  <main id="result" class="result" hidden>
+    <div class="msg" id="resMsg"></div>
+    <div class="big num" id="resMin"></div>
+    <div class="note" id="resNote"></div>
+    <div class="tally" id="resTally"></div>
+    <button class="primary" id="resOk">OK</button>
+    <div class="row" style="justify-content:center">
+      <button class="linkish" id="resForce" hidden></button>
+      <button class="linkish" id="resUndo">この記録を取り消す</button>
+    </div>
+  </main>
+</div>
+
+<dialog id="settings">
+  <div class="dlg">
+    <div class="dlg-head"><h2>設定</h2><button class="ok" id="closeSettings">とじる</button></div>
+    <p class="small" id="welcome" hidden>はじめに、れんしゅうする人の名前を入れてください。あとから変えられます。</p>
+
+    <section class="panel">
+      <h2>れんしゅうする人 <span>1日の目標</span></h2>
+      <div class="field" id="pEdit"></div>
+      <div class="row" style="margin-top:10px"><button class="ghost" id="pAdd">人を追加</button></div>
+    </section>
+
+    <section class="panel field">
+      <h2>自動で終わるまで</h2>
+      <div class="seg" id="autoSeg"></div>
+      <p class="small">ピアノの音がこの時間聞こえないと、練習を終わりにします。記録は最後にピアノが鳴ったところまでです。</p>
+    </section>
+
+    <section class="panel field">
+      <h2>ピアノの聞き分け</h2>
+      <div class="seg" id="sensSeg"></div>
+      <p class="small">弾いているのに「聞こえない」になるときは「ゆるめ」、話し声に反応するときは「きびしめ」にしてください。</p>
+    </section>
+
+    <section class="panel field">
+      <h2>マイクのテスト</h2>
+      <p class="small">ピアノを弾くと左の数が、話したり手をたたいたりすると右の数が増えれば正常です。</p>
+      <div class="counts"><div>ピアノ<b class="num" id="tPiano">0</b></div><div>ピアノ以外の音<b class="num" id="tOther">0</b></div></div>
+      <div class="meter"><i id="tMeter"></i></div>
+      <div class="row"><button class="ghost" id="tStart">テスト開始</button><span class="small" id="tInfo"></span></div>
+      <div class="testlog" id="tLog"></div>
+    </section>
+
+    <section class="panel field">
+      <h2>記録の保存先（Google スプレッドシート）</h2>
+      <label class="field"><span>ウェブアプリの URL（https://script.google.com/macros/s/…/exec）</span>
+        <input type="url" id="cloudUrl" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+      <div class="row"><button class="ghost" id="cloudTest">つながるか確かめる</button><span class="small" id="cloudInfo"></span></div>
+      <p class="small">未設定のあいだは、この端末の中にだけ保存します。つなげると、それまでの記録もまとめて送ります。</p>
+      <details class="guide">
+        <summary>つなげかた（パソコンで 5分ほど）</summary>
+        <ol>
+          <li>Google ドライブで新しいスプレッドシートを作る（名前は「ピアノ練習記録」など）</li>
+          <li>メニューの「拡張機能」→「Apps Script」を開く</li>
+          <li>最初に入っているコードを全部消して、下のボタンでコピーしたコードを貼り付け、保存する
+            <div class="row" style="margin-top:6px"><button class="ghost" id="copyCode" type="button">コードをコピー</button><span class="small" id="copyInfo"></span></div></li>
+          <li>右上の「デプロイ」→「新しいデプロイ」→ 歯車から「ウェブアプリ」を選ぶ</li>
+          <li>「次のユーザーとして実行：自分」「アクセスできるユーザー：全員」にして「デプロイ」</li>
+          <li>Google の確認画面が出たら、自分のアカウントで「許可」する（「このアプリは Google で確認されていません」と出たら「詳細」→「（安全ではないページ）に移動」）</li>
+          <li>表示された「ウェブアプリの URL」（…/exec で終わる）をコピーし、LINE やメールで自分に送って、iPad でこの欄に貼り付ける</li>
+        </ol>
+      </details>
+    </section>
+    <p class="small" style="text-align:center" id="ver"></p>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="detector.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
