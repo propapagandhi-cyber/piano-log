@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-  const VERSION = '1.2（2026-11-15 高音域）';
+  const VERSION = '2.0（2026-11-15 楽譜つき）';
   const $ = (id) => document.getElementById(id);
 
   // ---------- storage ----------
@@ -416,6 +416,33 @@
     try { a.stream && a.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* ignore */ }
     try { a.ctx && a.ctx.close(); } catch (e) { /* ignore */ }
   }
+  // 楽譜の音を鳴らしているあいだはマイクを止める（iPad は録音中だと再生の音が小さくなるため）。
+  // AudioContext は動かしたままにして、止めたあとはタップなしでマイクだけつなぎ直す
+  function pauseMic() {
+    const a = audio;
+    if (!a || !a.stream) return;
+    a.paused = true;
+    try { a.src && a.src.disconnect(); } catch (e) { /* ignore */ }
+    try { a.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* ignore */ }
+    a.stream = null;
+    a.live = false;
+  }
+  async function resumeMic() {
+    const a = audio;
+    if (!a || !a.paused) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
+      if (audio !== a || !a.paused) { stream.getTracks().forEach((t) => t.stop()); return; }
+      a.stream = stream;
+      a.src = a.ctx.createMediaStreamSource(stream);
+      a.src.connect(a.node);
+      a.paused = false;
+      if (a.ctx.state !== 'running') a.ctx.resume().catch(() => {});
+    } catch (e) {
+      a.paused = false;
+      a.error = 'マイクを再開できませんでした';
+    }
+  }
   function micLive() {
     const a = audio;
     if (!a || !a.stream) return false;
@@ -466,6 +493,7 @@
     enterSessionView();
     wake();
     await startMic(onSessionNote);
+    if (playerSound) pauseMic();
   }
   function enterSessionView() {
     $('sessWho').replaceChildren(...sess.people.map((id) => chip(id)));
@@ -488,6 +516,7 @@
       if (sec >= MIN_SEC) rec = makeRecord(begin, end, sec, s.people, how);
     }
     showResult(s, rec, now);
+    setView('log');   // ended while the score was shown: show the result
   }
   function showResult(s, rec, now) {
     const names = namesOf(s.people);
@@ -532,6 +561,7 @@
 
   // UI loop
   function tick() {
+    renderPill();
     if (!sess) return;
     const now = Date.now();
     $('timer').textContent = fmtClock(now - sess.start);
@@ -539,7 +569,14 @@
     const live = micLive();
     const st = $('micStatus');
     let auto = '';
-    if (live) {
+    if (playerSound) {
+      // the score player is making sound: count it as practice, the microphone rests
+      if (!sess.first) sess.first = now;
+      sess.last = now;
+      sess.prevNote = now;
+      st.className = 'status on';
+      $('micText').textContent = '楽譜の音を鳴らしています（れんしゅう中として数えます）';
+    } else if (live) {
       const heard = sess.prevNote && now - sess.prevNote < 4000;
       st.className = 'status' + (heard ? ' on' : '') + (st.classList.contains('flash') ? ' flash' : '');
       $('micText').textContent = heard ? 'ピアノが聞こえています' : 'ピアノの音を待っています';
@@ -572,6 +609,38 @@
     if (!micLive()) { wake(); await startMic(onSessionNote); }
   });
   $('resOk').addEventListener('click', backHome);
+
+  // ---------- score player (player/index.html in an iframe) ----------
+  let view = 'log';
+  let playerSound = false;
+  function setView(v) {
+    view = v;
+    document.body.classList.toggle('score', v === 'score');
+    $('scoreView').hidden = v !== 'score';
+    $('tabLog').setAttribute('aria-selected', String(v === 'log'));
+    $('tabScore').setAttribute('aria-selected', String(v === 'score'));
+    if (v === 'score' && !$('scoreView').firstChild) {
+      $('scoreView').append(h('iframe', { src: 'player/index.html', title: '楽譜プレーヤー', allow: 'fullscreen; screen-wake-lock; autoplay' }));
+    }
+    renderPill();
+  }
+  function renderPill() {
+    const show = !!sess && view === 'score';
+    $('pill').hidden = !show;
+    if (show) $('pillText').textContent = `れんしゅう中 ${fmtClock(Date.now() - sess.start)}`;
+  }
+  $('tabLog').addEventListener('click', () => setView('log'));
+  $('tabScore').addEventListener('click', () => setView('score'));
+  $('pill').addEventListener('click', () => setView('log'));
+  window.addEventListener('message', (e) => {
+    if (e.origin !== location.origin || !e.data || e.data.type !== 'player-sound') return;
+    const on = !!e.data.on;
+    if (on === playerSound) return;
+    playerSound = on;
+    if (!sess) return;
+    if (on) pauseMic(); else resumeMic();
+  });
+
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return;
     if (sess) wake();
@@ -621,31 +690,95 @@
     $('welcome').hidden = !welcome;
     $('cloudUrl').value = settings.cloudUrl || '';
     $('cloudInfo').textContent = '';
+    $('songKey').value = fmtKey(getSongKey());
+    $('songKeyInfo').textContent = '';
+    $('setupInfo').textContent = '';
     $('ver').textContent = `バージョン ${VERSION}`;
     renderSettings();
     if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
   }
+  // set the sheet's web-app URL; after connecting a new sheet, send everything recorded on this device so far
+  function connectCloud(url) {
+    const changed = url !== settings.cloudUrl;
+    settings.cloudUrl = url;
+    save(LS.settings, settings);
+    if (!changed) return;
+    syncState = validUrl(url) ? 'wait' : 'local';
+    queue = queue.filter((q) => q.action !== 'settings');
+    if (validUrl(url)) {
+      const pending = new Set(queue.filter((q) => q.action === 'add').map((q) => q.record.id));
+      for (const r of records) if (!pending.has(r.id)) queue.push({ action: 'add', record: r });
+    }
+    save(LS.queue, queue);
+  }
   function closeSettings() {
     stopTest();
     settings.people.forEach((p, i) => { if (!p.name) p.name = `${i + 1}人目`; });
-    const url = $('cloudUrl').value.trim();
-    const urlChanged = url !== settings.cloudUrl;
-    settings.cloudUrl = url;
+    const k = normKey($('songKey').value);
+    if (k !== getSongKey()) setSongKey(k);
+    connectCloud($('cloudUrl').value.trim());
     settings.updatedAt = Date.now();
     save(LS.settings, settings);
     if (dlg.close) dlg.close(); else dlg.removeAttribute('open');
-    if (urlChanged) { syncState = validUrl(url) ? 'wait' : 'local'; queue = queue.filter((q) => q.action !== 'settings'); save(LS.queue, queue); }
-    if (validUrl(url)) {
-      // after connecting a new sheet, send everything recorded on this device so far
-      if (urlChanged) {
-        const pending = new Set(queue.filter((q) => q.action === 'add').map((q) => q.record.id));
-        for (const r of records) if (!pending.has(r.id)) queue.push({ action: 'add', record: r });
-        save(LS.queue, queue);
-      }
-      pushSettings();
-    }
+    if (validUrl(settings.cloudUrl)) pushSettings();
     renderHome();
     refreshCloud(true);
+  }
+
+  // ---------- 楽譜の合言葉（player/songpack.js と同じ方法で確かめる） ----------
+  const KEY_STORE = 'pl.key';
+  const normKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const fmtKey = (s) => normKey(s).replace(/(.{4})(?=.)/g, '$1-');
+  const getSongKey = () => { try { return localStorage.getItem(KEY_STORE) || ''; } catch (e) { return ''; } };
+  // saving fires a "storage" event in the score player's frame, which then uses the new passphrase
+  function setSongKey(v) { try { const n = normKey(v); if (n) localStorage.setItem(KEY_STORE, n); else localStorage.removeItem(KEY_STORE); } catch (e) { /* storage blocked */ } }
+  async function checkSongKey(pass) {
+    const m = await (await fetch('player/packs/meta.json', { cache: 'no-cache' })).json();
+    const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(normKey(pass)), 'PBKDF2', false, ['deriveKey']);
+    const k = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: b64(m.salt), iterations: m.iter, hash: 'SHA-256' },
+      base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    const c = b64(m.check);
+    try { await crypto.subtle.decrypt({ name: 'AES-GCM', iv: c.subarray(4, 16) }, k, c.subarray(16)); return true; } catch (e) { return false; }
+  }
+  $('songKeyTest').addEventListener('click', async () => {
+    const info = $('songKeyInfo');
+    if (!normKey($('songKey').value)) { info.textContent = '合言葉を入れてください'; return; }
+    info.textContent = 'たしかめています…';
+    try {
+      info.textContent = (await checkSongKey($('songKey').value)) ? '合言葉は正しいです（とじると保存します）' : '合言葉がちがいます';
+    } catch (e) {
+      info.textContent = 'たしかめられませんでした（ネットにつながっているか確認してください）';
+    }
+  });
+  $('setupLink').addEventListener('click', async () => {
+    const info = $('setupInfo');
+    const k = normKey($('songKey').value) || getSongKey();
+    const c = $('cloudUrl').value.trim();
+    const parts = [];
+    if (k) parts.push('k=' + k);
+    if (validUrl(c)) parts.push('c=' + encodeURIComponent(c));
+    if (!parts.length) { info.textContent = '合言葉か記録の保存先を入れてから作ってください'; return; }
+    const link = location.origin + location.pathname + '#' + parts.join('&');
+    try {
+      await navigator.clipboard.writeText(link);
+      info.textContent = 'コピーしました。LINE やメモに貼って残してください';
+    } catch (e) {
+      info.textContent = link;   // copy by hand
+    }
+  });
+  // opening a setup link (#k=…&c=…) stores the passphrase and the sheet, then removes them from the address bar
+  function readSetupLink() {
+    const hash = location.hash.replace(/^#/, '');
+    if (!/(^|&)(k|c)=/.test(hash)) return '';
+    const p = new URLSearchParams(hash);
+    const done = [];
+    if (p.get('k')) { setSongKey(p.get('k')); done.push('楽譜の合言葉'); }
+    const c = p.get('c');
+    if (c && validUrl(c)) { connectCloud(c); done.push('記録の保存先'); }
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ }
+    if (done.length) setTimeout(() => toast(`${done.join('と')}を設定しました`), 400);
+    return done.join(',');
   }
   $('openSettings').addEventListener('click', () => openSettings(false));
   $('closeSettings').addEventListener('click', closeSettings);
@@ -710,6 +843,7 @@
 
   // ---------- start ----------
   keyboardSvg($('keys'), 6, 12, 40, false);
+  const fromLink = readSetupLink();
   const saved = load(LS.session, null);
   if (saved && saved.start && saved.people) {
     sess = saved;
@@ -722,7 +856,8 @@
   } else {
     show('home');
     renderHome();
-    if (firstRun) openSettings(true);
+    // a setup link with the sheet brings the names from the sheet, so no need to ask for them
+    if (firstRun && !fromLink.includes('記録の保存先')) openSettings(true);
   }
   refreshCloud(true);
 })();

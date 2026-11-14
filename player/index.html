@@ -1,0 +1,1866 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<script src="songpack.js"></script>
+</head><body>
+<title>練習プレーヤー</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=Zen+Maru+Gothic:wght@500;700&display=swap">
+<style>
+/* Layout: 楽譜を段（system）ごとに切り出し、画面の横幅いっぱいに縦に並べる（楽譜スキャナーと同じ見せ方）。
+   演奏中の段が画面に入っている間はスクロールしない。操作は下のごく細い 1 行の帯、音の出し方は帯から開く小さな卓で。
+   楽譜の紙は両テーマとも白。蛍光ペンの黄色 = いまの小節、赤ペン = いま弾く音符、青鉛筆 = くり返す区間 */
+:root {
+  --desk: #E7E2E0;
+  --bar: #FAF8F7;
+  --ink: #261E20;
+  --muted: #6E6466;
+  --line: #D6CDCE;
+  --chip: #ECE6E5;
+  --accent: #8C2235;        /* ピアノのフェルトの赤 */
+  --accent-ink: #FFFFFF;
+  --paper: #FFFFFF;
+  --paper-shadow: 0 1px 2px rgba(60, 30, 36, .14), 0 4px 18px rgba(60, 30, 36, .10);
+  --panel-shadow: 0 8px 28px rgba(40, 20, 24, .22);
+  --marker: rgba(255, 208, 30, .40);
+  --pen: #D0182F;
+  --loop-fill: rgba(40, 104, 212, .13);
+  --loop-edge: #2868D4;
+  --font-ui: "BIZ UDPGothic", "Hiragino Sans", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+  --font-display: "Zen Maru Gothic", "Hiragino Maru Gothic ProN", "BIZ UDPGothic", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --desk: #161213; --bar: #221C1E; --ink: #F3EDED; --muted: #AAA0A2;
+    --line: #3C3335; --chip: #2F2729; --accent: #E06A7E; --accent-ink: #1B1517;
+    --paper-shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 4px 18px rgba(0, 0, 0, .4);
+    --panel-shadow: 0 8px 28px rgba(0, 0, 0, .55);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --desk: #161213; --bar: #221C1E; --ink: #F3EDED; --muted: #AAA0A2;
+  --line: #3C3335; --chip: #2F2729; --accent: #E06A7E; --accent-ink: #1B1517;
+  --paper-shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 4px 18px rgba(0, 0, 0, .4);
+  --panel-shadow: 0 8px 28px rgba(0, 0, 0, .55);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--desk);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+button, select, input { font: inherit; color: inherit; }
+button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; cursor: pointer; }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 3px solid var(--loop-edge); outline-offset: 2px; }
+
+.app { height: 100%; display: flex; flex-direction: column; }
+
+/* 楽譜 */
+.stage { flex: 1; min-height: 0; position: relative; }
+.view {
+  position: absolute;
+  inset: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding: 6px 16px;
+}
+.strip {
+  position: relative;
+  width: 100%;
+  background: var(--paper);
+  box-shadow: var(--paper-shadow);
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.strip + .strip { margin-top: 6px; }
+.strip img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; pointer-events: none; }
+.layer, .notes { position: absolute; inset: 0; pointer-events: none; }
+.notes svg { display: block; width: 100%; height: 100%; }
+.notes use { fill: transparent; }
+.notes use.on { fill: var(--pen); stroke: var(--pen); stroke-width: 9; }
+.marker {
+  position: absolute;
+  background: var(--marker);
+  mix-blend-mode: multiply;
+  border-radius: 6px;
+}
+.band { position: absolute; background: var(--loop-fill); border-block: 2px solid var(--loop-edge); }
+.band.a { border-left: 5px solid var(--loop-edge); border-radius: 6px 0 0 6px; }
+.band.b { border-right: 5px solid var(--loop-edge); border-radius: 0 6px 6px 0; }
+.band.a.b { border-radius: 6px; }
+.band.pick { border: 3px dashed var(--loop-edge); border-radius: 6px; }
+
+/* 下の帯（1 行。できるだけ細く） */
+.deck {
+  flex: none;
+  background: var(--bar);
+  border-top: 1px solid var(--line);
+  padding: 2px 16px;
+}
+.deck-in {
+  max-width: 1100px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+}
+.ibtn {
+  width: 34px; height: 34px;
+  border: 0;
+  background: transparent;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.ibtn svg { width: 20px; height: 20px; fill: var(--ink); }
+.ibtn:active { background: var(--chip); }
+.ibtn:disabled { opacity: .3; }
+.ibtn[aria-expanded="true"] { background: var(--chip); }
+.play {
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  border: 0;
+  background: var(--accent);
+  color: var(--accent-ink);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.play svg { width: 18px; height: 18px; fill: currentColor; }
+.play:active { transform: scale(.95); }
+.play[aria-busy="true"] { opacity: .5; }
+
+.where { flex: 1 1 120px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.where .no { font-family: var(--font-display); font-weight: 700; font-size: 17px; color: var(--ink); }
+.where .unit { font-size: 11px; color: var(--ink); margin: 0 6px 0 1px; }
+
+.tempo { display: flex; align-items: center; gap: 1px; background: var(--chip); border-radius: 9px; padding: 1px; flex: none; }
+.step { width: 30px; height: 30px; border: 0; background: transparent; border-radius: 8px; font-size: 19px; font-weight: 700; line-height: 1; }
+.step:active { background: var(--bar); }
+.step:disabled { opacity: .3; }
+.tval {
+  position: relative;
+  min-width: 62px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0 6px;
+  background: var(--bar);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .12);
+}
+.tval b { font-family: var(--font-display); font-weight: 700; font-size: 15px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.tval select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; font-size: 16px; cursor: pointer; }
+
+.loopbtn {
+  height: 30px;
+  border: 1.5px solid var(--loop-edge);
+  color: var(--loop-edge);
+  background: transparent;
+  border-radius: 9px;
+  padding: 0 8px;
+  font-weight: 700;
+  font-size: 12.5px;
+  white-space: nowrap;
+  flex: none;
+}
+.loopbtn[aria-pressed="true"] { background: var(--loop-edge); color: #FFFFFF; }
+
+/* 練習番号（楽譜の □ で囲んだ A, B, …）。帯のボタンはいまの練習番号を出し、押すと一覧が開く */
+.rbox {
+  min-width: 24px;
+  height: 24px;
+  padding: 0 3px;
+  border: 2px solid currentColor;
+  border-radius: 2px;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 15px;
+  line-height: 1;
+}
+.rehbtn {
+  height: 34px;
+  border: 0;
+  background: transparent;
+  border-radius: 9px;
+  padding: 0 3px 0 5px;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+}
+.rehbtn svg { width: 14px; height: 14px; fill: var(--muted); }
+.rehbtn:active, .rehbtn[aria-expanded="true"] { background: var(--chip); }
+/* 曲えらび。帯のいちばん左にいまの曲名、押すと一覧が開く */
+.songbtn {
+  height: 30px;
+  max-width: 8.5em;
+  border: 0;
+  background: var(--chip);
+  border-radius: 9px;
+  padding: 0 4px 0 9px;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  font-weight: 700;
+  font-size: 13px;
+  flex: none;
+}
+.songbtn span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.songbtn svg { width: 14px; height: 14px; fill: var(--muted); flex: none; }
+.songbtn:active, .songbtn[aria-expanded="true"] { background: var(--line); }
+.slist { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+.slist button {
+  border: 0;
+  background: var(--chip);
+  border-radius: 10px;
+  padding: 9px 12px;
+  display: grid;
+  justify-items: start;
+  gap: 1px;
+  text-align: left;
+  font-weight: 700;
+  font-size: 15px;
+}
+.slist small { font-weight: 400; font-size: 11.5px; color: var(--muted); }
+.slist button[aria-current="true"] { background: var(--accent); color: var(--accent-ink); }
+.slist button[aria-current="true"] small { color: inherit; }
+.slist button:active { transform: scale(.98); }
+.rgrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+.rgrid button {
+  border: 0;
+  background: var(--chip);
+  border-radius: 10px;
+  padding: 7px 2px 5px;
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+}
+.rgrid .rbox { min-width: 32px; height: 32px; font-size: 20px; }
+.rgrid small { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.rgrid button[aria-current="true"] { background: var(--accent); color: var(--accent-ink); }
+.rgrid button[aria-current="true"] small { color: inherit; }
+.rgrid button:active { transform: scale(.96); }
+/* 移動した小節を少しのあいだ目立たせる */
+.marker.flash { animation: flash .6s ease-out 2; }
+@keyframes flash {
+  from { box-shadow: 0 0 0 3px rgba(230, 150, 0, .95); }
+  to { box-shadow: 0 0 0 14px rgba(230, 150, 0, 0); }
+}
+
+/* 音の出し方（段ごとの音・メトロノーム）と練習番号の一覧 */
+.mixer, .jump {
+  position: absolute;
+  right: 16px;
+  bottom: 8px;
+  z-index: 13;
+  width: min(340px, calc(100% - 32px));
+  background: var(--bar);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--panel-shadow);
+  padding: 6px 12px 10px;
+  max-height: calc(100% - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.jump { right: auto; left: 16px; width: min(316px, calc(100% - 32px)); }
+.mix-head { display: flex; align-items: center; justify-content: space-between; font-weight: 700; font-size: 14px; }
+.mix-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 2.6em;
+  grid-template-areas: "mute name val" "mute range range";
+  align-items: center;
+  column-gap: 8px;
+  padding: 5px 0;
+  border-top: 1px solid var(--line);
+}
+.mix-row.metro, .mix-row.all + .mix-row { border-top: 2px solid var(--line); }
+.mix-mode { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; font-size: 13.5px; font-weight: 700; }
+.seg2 { display: flex; gap: 2px; background: var(--chip); border-radius: 9px; padding: 2px; }
+.seg2 button { border: 0; background: transparent; border-radius: 7px; padding: 5px 12px; font-size: 13px; font-weight: 700; color: var(--muted); }
+.seg2 button[aria-pressed="true"] { background: var(--bar); color: var(--accent); box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
+.mix-row.metro + .mix-mode { border-top: 1px solid var(--line); }
+.mix-tone { padding: 6px 0 8px; border-top: 1px solid var(--line); font-size: 13.5px; font-weight: 700; }
+.chips { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin-top: 4px; }
+.chips button { border: 0; background: var(--chip); border-radius: 8px; padding: 6px 4px; font-size: 12.5px; font-weight: 700; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chips button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.chips button[aria-busy="true"] { opacity: .55; }
+.credit { margin: 4px 0 0; font-size: 11px; line-height: 1.4; color: var(--muted); }
+.mix-row .ibtn { grid-area: mute; }
+.mix-row .ibtn svg { fill: var(--accent); }
+.mix-row[data-on="false"] .ibtn svg { fill: var(--muted); }
+.mix-row[data-on="false"] .mix-name, .mix-row[data-on="false"] input, .mix-row[data-on="false"] .mix-val { opacity: .45; }
+.mix-name { grid-area: name; font-size: 13.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mix-val { grid-area: val; text-align: right; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.mix-row input[type="range"] { grid-area: range; width: 100%; margin: 0; accent-color: var(--accent); height: 28px; }
+
+/* 画面の上・下に浮かぶもの */
+.banner {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 12;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--loop-edge);
+  color: #FFFFFF;
+  border-radius: 999px;
+  padding: 6px 6px 6px 16px;
+  font-weight: 700;
+  font-size: 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .25);
+}
+.banner button { border: 0; background: rgba(255, 255, 255, .22); color: #FFFFFF; border-radius: 999px; padding: 4px 12px; font-weight: 700; }
+.float {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  z-index: 11;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+.pill, .toast {
+  background: var(--ink);
+  color: var(--desk);
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-size: 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .25);
+}
+.pill { border: 0; font-weight: 700; }
+.toast { border-radius: 12px; }
+
+/* メトロノームだけ（楽譜なし）。.app に .metro-on がついている間は楽譜と、楽譜のための操作をかくす */
+.metro { position: absolute; inset: 0; display: none; overflow-y: auto; overscroll-behavior: contain; padding: 12px 16px 20px; }
+.metro-on .metro { display: flex; }
+.metro-on #view, .metro-on #where, .metro-on #toStart, .metro-on #rehBtn, .metro-on .tempo, .metro-on #loop,
+.metro-on #mixBtn, .metro-on #banner, .metro-on #followPill, .metro-on #mixer, .metro-on #jump { display: none !important; }
+#mwhere { display: none; }
+.metro-on #mwhere { display: block; }
+.mcard {
+  margin: auto;
+  width: min(520px, 100%);
+  background: var(--bar);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: var(--paper-shadow);
+  padding: 18px 20px 20px;
+  display: grid;
+  gap: 14px;
+}
+.beats { display: flex; justify-content: center; align-items: center; gap: 12px; min-height: 48px; }
+.beats i { width: 40px; height: 40px; border-radius: 50%; border: 3px solid var(--muted); }
+.beats i.acc { border-color: var(--accent); }
+.beats i.on { background: var(--ink); border-color: var(--ink); }
+.beats i.acc.on { background: var(--accent); border-color: var(--accent); }
+.beats i.hit { animation: pop .18s ease-out; }
+@keyframes pop { from { transform: scale(1.3); } to { transform: scale(1); } }
+.bpm-row { display: flex; align-items: center; justify-content: center; gap: 18px; }
+.bigstep {
+  width: 60px; height: 60px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--chip);
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1;
+  flex: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.bigstep:active { background: var(--line); }
+.bigstep:disabled { opacity: .3; }
+.bpm { display: flex; align-items: baseline; justify-content: center; gap: 2px; min-width: 4.6em; }
+.bpm small { font-size: 22px; font-weight: 700; }
+.bpm b { font-family: var(--font-display); font-weight: 700; font-size: 64px; line-height: 1; color: var(--accent); font-variant-numeric: tabular-nums; }
+.mcard input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); height: 32px; }
+.mact { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 8px; }
+.tapbtn {
+  height: 52px;
+  border: 1.5px solid var(--line);
+  background: transparent;
+  border-radius: 14px;
+  padding: 0 6px;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--muted);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.tapbtn:active { background: var(--chip); }
+.mgo {
+  height: 52px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 17px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.mgo svg { width: 22px; height: 22px; fill: currentColor; }
+.mgo[aria-pressed="true"] { background: var(--ink); color: var(--desk); }
+.mgo[aria-busy="true"] { opacity: .5; }
+.mgo:active { transform: scale(.98); }
+.mset { display: grid; grid-template-columns: 3.2em minmax(0, 1fr); align-items: center; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13.5px; font-weight: 700; }
+.mset .chips { margin-top: 0; }
+.mset.vol { grid-template-columns: 3.2em minmax(0, 1fr) 2.4em; }
+.mset.vol input[type="range"] { height: 28px; }
+.mval { text-align: right; font-size: 12px; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
+.chips.c6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.chips.c4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.chips.c2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+@media (prefers-reduced-motion: reduce) {
+  .play:active, .rgrid button:active, .slist button:active, .mgo:active { transform: none; }
+  .marker.flash { animation: hold 1.2s step-end; }
+  .beats i.hit { animation: none; }
+}
+@keyframes hold {
+  from { box-shadow: 0 0 0 3px rgba(230, 150, 0, .95); }
+  to { box-shadow: none; }
+}
+</style>
+
+<div class="app" id="app">
+  <main class="stage" aria-label="楽譜">
+    <div class="view" id="view"></div>
+    <div class="metro" id="metro">
+      <div class="mcard" role="group" aria-label="メトロノーム">
+        <div class="beats" id="mBeats" aria-hidden="true"></div>
+        <div class="bpm-row">
+          <button class="bigstep" id="mSlower" type="button" aria-label="おそくする（押したままで続けて）">−</button>
+          <div class="bpm"><small>♩=</small><b id="mBpm">120</b></div>
+          <button class="bigstep" id="mFaster" type="button" aria-label="はやくする（押したままで続けて）">+</button>
+        </div>
+        <input type="range" id="mRange" min="30" max="240" step="1" aria-label="テンポ">
+        <div class="mact">
+          <button class="tapbtn" id="mTap" type="button">タップでテンポ</button>
+          <button class="mgo" id="mGo" type="button" aria-pressed="false" aria-busy="true"></button>
+        </div>
+        <div class="mset" role="group" aria-label="拍子"><span>拍子</span><div class="chips c6" id="mMeter"></div></div>
+        <div class="mset" role="group" aria-label="刻み"><span>刻み</span><div class="chips c4" id="mSub"></div></div>
+        <div class="mset" role="group" aria-label="メトロノームの音"><span>音</span><div class="chips c2" id="mType"></div></div>
+        <div class="mset vol"><label for="mVol">音量</label><input type="range" id="mVol" min="0" max="100" step="5"><span class="mval" id="mVolVal"></span></div>
+      </div>
+    </div>
+    <div class="banner" id="banner" hidden>
+      <span id="bannerText">くり返す区間の、はじめの小節をタップ</span>
+      <button type="button" id="bannerCancel">やめる</button>
+    </div>
+    <div class="float">
+      <button class="pill" id="followPill" type="button" hidden>再生中の段へ</button>
+      <div class="toast" id="toast" role="status" hidden></div>
+    </div>
+    <div class="mixer" id="mixer" role="dialog" aria-label="音の出し方" hidden>
+      <div class="mix-head">
+        <span>音の出し方</span>
+        <button class="ibtn" id="mixClose" type="button" aria-label="閉じる">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4z"/></svg>
+        </button>
+      </div>
+      <div id="mixRows"></div>
+      <p class="credit">ピアノの音: Salamander Grand Piano V3（Alexander Holm、CC BY 3.0。切り出して使用）。
+        ほかの音色: MuseScore の MS Basic（MuseScore_General: S. Christian Collins、FluidR3: Frank Wen ほか。MIT ライセンス）</p>
+      <p class="credit" id="audioState"></p>
+    </div>
+    <div class="jump" id="jump" role="dialog" aria-label="練習番号へ移動" hidden>
+      <div class="mix-head">
+        <span>練習番号へ移動</span>
+        <button class="ibtn" id="jumpClose" type="button" aria-label="閉じる">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4z"/></svg>
+        </button>
+      </div>
+      <div class="rgrid" id="rgrid"></div>
+      <p class="credit">止まっているときは移動だけ（▶ で再生）。再生中は、そこから続けて再生します。</p>
+    </div>
+    <div class="jump" id="songs" role="dialog" aria-label="曲をえらぶ" hidden>
+      <div class="mix-head">
+        <span>曲をえらぶ</span>
+        <button class="ibtn" id="songsClose" type="button" aria-label="閉じる">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4z"/></svg>
+        </button>
+      </div>
+      <div class="slist" id="slist"></div>
+    </div>
+  </main>
+  <footer class="deck" id="deck">
+    <div class="deck-in">
+      <button class="songbtn" id="songBtn" type="button" aria-label="曲をえらぶ" title="曲をえらぶ" aria-haspopup="dialog" aria-expanded="false" aria-controls="songs">
+        <span id="songNow">曲</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14.6 12 9.6l5 5-1.4 1.4-3.6-3.6-3.6 3.6z"/></svg>
+      </button>
+      <button class="ibtn" id="toStart" type="button" aria-label="最初から" title="最初から">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h2.4v14H5zM19 5.6v12.8a.6.6 0 0 1-.92.5L8.6 12.5a.6.6 0 0 1 0-1L18.08 5.1a.6.6 0 0 1 .92.5z"/></svg>
+      </button>
+      <button class="play" id="play" type="button" aria-label="再生" aria-busy="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true" id="playIcon"><path d="M8 5.2v13.6a.7.7 0 0 0 1.06.6l10.9-6.8a.7.7 0 0 0 0-1.2L9.06 4.6A.7.7 0 0 0 8 5.2z"/></svg>
+      </button>
+      <button class="rehbtn" id="rehBtn" type="button" aria-label="練習番号へ移動" title="練習番号へ移動" aria-haspopup="dialog" aria-expanded="false" aria-controls="jump">
+        <span class="rbox" id="rehNow">–</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14.6 12 9.6l5 5-1.4 1.4-3.6-3.6-3.6 3.6z"/></svg>
+      </button>
+      <div class="where" id="where">
+        <span class="no" id="mno">弱起</span><span class="unit" id="munit" hidden>小節</span><span id="row2">原譜 弱起 ・ 0:00 / 0:00</span>
+      </div>
+      <div class="where" id="mwhere">
+        <span class="no" id="mNo"></span><span class="unit" id="mUnit" hidden></span><span id="mRow2"></span>
+      </div>
+      <div class="tempo" role="group" aria-label="テンポ">
+        <button class="step" id="slower" type="button" aria-label="おそくする">−</button>
+        <label class="tval"><b id="tnum">♩=120</b><select id="tsel" aria-label="テンポをえらぶ"></select></label>
+        <button class="step" id="faster" type="button" aria-label="はやくする">+</button>
+      </div>
+      <button class="loopbtn" id="loop" type="button" aria-pressed="false">𝄆 区間</button>
+      <button class="ibtn" id="mixBtn" type="button" aria-label="音の出し方" title="音の出し方" aria-expanded="false" aria-controls="mixer">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h2v7.2a2.5 2.5 0 0 1 0 4.6V21H5v-6.2a2.5 2.5 0 0 1 0-4.6zm6 0h2v3.2a2.5 2.5 0 0 1 0 4.6V21h-2V10.8a2.5 2.5 0 0 1 0-4.6zm6 0h2v11.2a2.5 2.5 0 0 1 0 4.6V21h-2v-2.2a2.5 2.5 0 0 1 0-4.6z"/></svg>
+      </button>
+      <button class="ibtn" id="fs" type="button" aria-label="全画面" title="全画面" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v2H6v4H4zm10 0h6v6h-2V6h-4zM4 14h2v4h4v2H4zm14 0h2v6h-6v-2h4z"/></svg>
+      </button>
+    </div>
+  </footer>
+</div>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (s) => document.getElementById(s);
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+  };
+  const AHEAD = 0.25;       // 何秒先まで音を予約しておくか
+  const LOOK = 0.01;        // 表示を音より少しだけ先に（秒）
+  // 曲: data.json・strips・marks は dir の中。音（audio/）は共通。帯のボタンには name を出す
+  const SONGS = [
+    { key: '123', name: '1・2・3', title: '1・2・3 発表会アレンジ', note: '連弾（Primo・Secondo）', dir: '' },
+    { key: 'elise', name: 'エリーゼ', title: 'エリーゼのために', note: 'ベートーベン（くり返しあり）', dir: 'elise/' },
+    { key: 'glass', name: 'ガラスのくつ', title: 'ガラスのくつ', note: 'ギロック', dir: 'glass/' },
+    { key: 'bday', name: 'バースデー', title: 'ハッピーバースデー', note: '3人連弾（父・長男・次男）', dir: 'bday/' },
+  ];
+  // 曲のデータ（data.json・strips・marks）の読み出し口。GitHub 版（練習記録アプリ/player/）では songpack.js が
+  // 合言葉で暗号化した曲のデータから読む PLAYER_SOURCE を用意する。claude.ai 版はふつうのファイルを読む
+  const SRC = window.PLAYER_SOURCE || {
+    prepare: async () => {},
+    url: (path) => path,
+    text: (path) => fetch(path).then((res) => (res.ok ? res.text() : '')),
+    json: async (path) => {
+      const res = await fetch(path);
+      if (!res.ok) throw new Error(String(res.status));
+      return res.json();
+    },
+  };
+  // 音を鳴らしている／止めたことを、同じサイトの親のページ（練習記録アプリ）に知らせる
+  function tellHost(on) {
+    try { if (window.parent !== window) window.parent.postMessage({ type: 'player-sound', on }, location.origin); } catch (e) {}
+  }
+  let song = SONGS.find((s) => s.key === store.get('player.song')) || SONGS[0];
+  let songGen = 0;           // 曲を切りかえるたびに 1 つ増やす（前の曲の読み込みが遅れて届いたら捨てる）
+
+  let D, SX, SW, N, PPQ;     // SX, SW: 段の SVG の横の範囲
+  const strips = [];         // 段ごとの { el, layer, notes }
+  const byRow = [];          // 段ごとの小節番号
+  const noteEl = [];         // 音符・休符の id → <use>
+  const NF = 5;              // D.notes の 1 音ぶん: 開始 tick, 長さ tick, 高さ, velocity, ずれ ms（分散和音）
+  const starts = [];         // 段ごとの音の開始 tick
+  let bpm = 120;
+  let playing = false;
+  let posTick = 0;           // 止まっているときの位置
+  let loop = null;           // { a, b }（小節）
+  let picking = 0, pickA = -1;
+  let follow = true, playRow = -1;
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  let shownMeasure = -1, shownSeg = -1, lit = [];
+  let raf = 0, wake = null;
+
+  // 段ごとの音量。vol は 0〜100
+  // flat: 強弱を無視して、全部の音をいちばん強い録音で鳴らす（pp のところも聞こえるように）
+  // timbre: 音色（piano = Salamander、crisp = その音を早く減衰させたもの、ほかは D.timbres の key）
+  // mtype: メトロノームの音（wood = ウッドブロック、bell = 振り子のメトロノームのようにベルとカチ）
+  // 何も変えていないとき: 大きく・ぜんぶ強く・くっきりピアノ・メトロノームあり（2026-10-18）
+  // 段ごとの on / vol は曲ごとに parts[曲の key] にしまう（段の数がちがう）。mix.on / mix.vol はいまの曲のもの
+  const DEFAULT_MIX = { loud: true, flat: true, timbre: 'crisp', aon: true, avol: 100, mon: true, mvol: 80, mtype: 'wood' };
+  const mix = JSON.parse(JSON.stringify(DEFAULT_MIX));
+  mix.parts = {};
+  try {
+    const saved = store.get('player.mix2');
+    if (saved) Object.assign(mix, JSON.parse(saved));
+    else {
+      // 前の版で保存した設定（player.mix）: 音量などはそのまま、既定を変えた 4 つだけ新しい既定にする
+      const old = JSON.parse(store.get('player.mix') || '{}');
+      for (const k of ['loud', 'flat', 'timbre', 'mon']) delete old[k];
+      Object.assign(mix, old);
+    }
+    // 1 曲だけだったころの段の設定（4 段）は 1・2・3 のもの
+    if (!mix.parts['123'] && Array.isArray(mix.on) && mix.on.length === 4) mix.parts['123'] = { on: mix.on, vol: mix.vol };
+  } catch (e) {}
+  // いまの曲の段の設定を mix.on / mix.vol に（parts と同じ配列なので、変えるとそのまま parts にも入る）
+  function staffMix() {
+    const n = D.staves.length;
+    let p = mix.parts[song.key];
+    if (!p || !Array.isArray(p.on) || p.on.length !== n) p = { on: Array(n).fill(true), vol: Array(n).fill(100) };
+    mix.parts[song.key] = p;
+    mix.on = p.on; mix.vol = p.vol;
+  }
+
+  const marker = document.createElement('div');
+  marker.className = 'marker';
+
+  // ---- 時刻と小節（tick は 4分音符 = PPQ） ----
+  // テンポは D.beat の音符で数える（4 = ♩、8 = ♪。エリーゼは 3/8 拍子なので ♪）
+  const beatNote = () => (D.beat === 8 ? '♪' : '♩');
+  const spt = () => 60 / (bpm * PPQ * 4 / (D.beat || 4));   // 1 tick の秒
+  const mStart = (i) => D.measureTick[i];
+  const mEnd = (i) => (i + 1 < N ? D.measureTick[i + 1] : D.endTick);
+  function bsearch(arr, v) {
+    if (v < arr[0]) return 0;
+    let lo = 0, hi = arr.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (arr[mid] <= v) lo = mid; else hi = mid - 1;
+    }
+    return lo;
+  }
+  function lowerBound(arr, v) {
+    let lo = 0, hi = arr.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (arr[mid] < v) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+  }
+  // 小節は演奏の順（くり返す小節は 2 回出てくる）。D.labels があれば楽譜の小節番号（2番カッコは 1番カッコと同じ）
+  const measureAt = (tick) => bsearch(D.measureTick, tick);
+  const origNo = (i) => (i < D.cut[0] ? i : i + (D.cut[1] - D.cut[0] + 1));
+  const label = (i) => (D.labels ? D.labels[i] : i === 0 ? '弱起' : String(i));
+  const clock = (sec) => {
+    const s = Math.max(0, Math.round(sec));
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  };
+
+  // ---- 楽譜（段ごとに横幅いっぱい） ----
+  function box(e, r, x, y, w, h) {
+    e.style.left = ((x - SX) / SW) * 100 + '%';
+    e.style.top = ((y - D.strips[r][0]) / D.strips[r][1]) * 100 + '%';
+    e.style.width = (w / SW) * 100 + '%';
+    e.style.height = (h / D.strips[r][1]) * 100 + '%';
+  }
+
+  function buildStrips() {
+    const view = $('view');
+    const gen = songGen;
+    D.strips.forEach(([, h], r) => {
+      const el = document.createElement('div');
+      el.className = 'strip';
+      el.dataset.r = r;
+      el.style.aspectRatio = SW + ' / ' + h;
+      const img = new Image();
+      img.alt = '楽譜 ' + (r + 1) + '段目';
+      img.decoding = 'async';
+      if (r > 5) img.loading = 'lazy';
+      img.src = SRC.url(song.dir + 'strips/' + (r + 1) + '.svg');
+      const layer = document.createElement('div');
+      layer.className = 'layer';
+      const notes = document.createElement('div');
+      notes.className = 'notes';
+      el.append(img, layer, notes);
+      view.append(el);
+      strips.push({ el, layer, notes });
+      byRow.push([]);
+      SRC.text(song.dir + 'marks/' + (r + 1) + '.svg').then((svg) => {
+        if (!svg || gen !== songGen) return;
+        notes.innerHTML = svg;
+        notes.querySelectorAll('use[id]').forEach((u) => { noteEl[+u.id.slice(1)] = u; });
+        shownSeg = -1;
+        render(nowTick());
+      }).catch(() => {});
+    });
+    D.measures.forEach((m, i) => byRow[D.measureRow[i]].push(i));
+  }
+  $('view').addEventListener('click', onScoreTap);
+  // iPad の向きを変えたときも、演奏中の段が画面に入るように
+  let lastW = $('view').clientWidth;
+  new ResizeObserver(() => {
+    if ($('view').clientWidth !== lastW && follow) { lastW = $('view').clientWidth; reveal(playRow, true); }
+  }).observe($('view'));
+
+  // 演奏中の段が画面に入っていなければ、その段がいちばん上に来るようにスクロールする（入っていれば動かさない）
+  function reveal(r, force) {
+    if (r < 0) return;
+    const v = $('view'), el = strips[r].el;
+    const top = el.offsetTop, bottom = top + el.offsetHeight;
+    if (!force && top >= v.scrollTop - 1 && bottom <= v.scrollTop + v.clientHeight + 1) return;
+    v.scrollTo({ top: Math.max(0, top - 6), behavior: reduceMotion.matches ? 'auto' : 'smooth' });
+  }
+
+  // 再生中に指でスクロールしたら、追いかけるのをやめる（「再生中の段へ」で戻る）
+  let touchY = null;
+  $('view').addEventListener('touchstart', (e) => { touchY = e.touches.length === 1 ? e.touches[0].clientY : null; }, { passive: true });
+  $('view').addEventListener('touchmove', (e) => {
+    if (touchY != null && Math.abs(e.touches[0].clientY - touchY) > 10) userScrolled();
+  }, { passive: true });
+  $('view').addEventListener('wheel', userScrolled, { passive: true });
+  function userScrolled() {
+    if (!playing || !follow) return;
+    follow = false;
+    $('followPill').hidden = false;
+  }
+  $('followPill').addEventListener('click', () => {
+    follow = true;
+    $('followPill').hidden = true;
+    reveal(playRow, true);
+  });
+
+  function hit(r, x, y) {
+    let best = -1, bd = Infinity;
+    for (const i of byRow[r]) {
+      const [, mx, my, mw, mh] = D.measures[i];
+      const dx = x < mx ? mx - x : x > mx + mw ? x - mx - mw : 0;
+      const dy = y < my ? my - y : y > my + mh ? y - my - mh : 0;
+      const d = dx * dx + dy * dy * 4;
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+  }
+
+  function onScoreTap(e) {
+    if (!D) return;
+    // 卓・練習番号や曲の一覧が開いているときは閉じるだけ
+    if (!$('mixer').hidden || !$('jump').hidden || !$('songs').hidden) { openMixer(false); openJump(false); openSongs(false); return; }
+    // 再生中は、楽譜のどこをタップしても一時停止。止まっているときに小節をタップすると、そこから再生（区間をえらんでいる間はのぞく）
+    if (playing && !picking) { pause(); return; }
+    const st = e.target.closest('.strip');
+    if (!st) return;
+    const r = +st.dataset.r;
+    const b = st.getBoundingClientRect();
+    const i = hit(r, SX + ((e.clientX - b.left) / b.width) * SW, D.strips[r][0] + ((e.clientY - b.top) / b.height) * D.strips[r][1]);
+    if (i < 0) return;
+    if (picking === 1) {
+      pickA = i; picking = 2;
+      drawLoop();
+      $('bannerText').textContent = label(i) + ' 小節から。終わりの小節をタップ';
+      return;
+    }
+    if (picking === 2) {
+      loop = { a: Math.min(pickA, i), b: Math.max(pickA, i) };
+      picking = 0;
+      drawLoop(); loopUi();
+      startAt(mStart(loop.a));
+      return;
+    }
+    follow = true; $('followPill').hidden = true;
+    startAt(mStart(i));
+  }
+
+  // くり返す区間を、段ごとの帯で描く
+  function drawLoop() {
+    document.querySelectorAll('.band').forEach((b) => b.remove());
+    const lo = picking === 2 ? pickA : loop && loop.a;
+    const hi = picking === 2 ? pickA : loop && loop.b;
+    if (lo == null || lo < 0) return;
+    let run = null;
+    const flush = () => {
+      if (!run) return;
+      const b = document.createElement('div');
+      b.className = 'band' + (picking === 2 ? ' pick' : '') + (run.first === lo ? ' a' : '') + (run.last === hi ? ' b' : '');
+      box(b, run.row, run.x, run.y, run.r - run.x, run.h);
+      strips[run.row].layer.prepend(b);
+      run = null;
+    };
+    for (let i = lo; i <= hi; i++) {
+      const [, x, y, w, h] = D.measures[i];
+      const row = D.measureRow[i];
+      if (run && run.row !== row) flush();
+      if (!run) run = { row, x, y, h, r: x + w, first: i, last: i };
+      run.r = x + w; run.last = i;
+    }
+    flush();
+  }
+
+  // 五線ごとに、いちばん新しく出た音符（休符）に色をつける
+  function paintNotes(j) {
+    if (j === shownSeg) return;
+    shownSeg = j;
+    for (const u of lit) u.classList.remove('on');
+    lit = [];
+    for (const st of D.events[D.measureRow[D.segments[j]]]) {
+      let lo = 0, hi = st.length - 1, k = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (st[mid][0] <= j) { k = mid; lo = mid + 1; } else hi = mid - 1;
+      }
+      if (k < 0) continue;
+      for (const id of st[k][1]) {
+        const u = noteEl[id];
+        if (u) { u.classList.add('on'); lit.push(u); }
+      }
+    }
+  }
+
+  function render(tick) {
+    const look = tick + LOOK / spt();
+    const i = Math.min(N - 1, measureAt(look));
+    const m = D.measures[i], row = D.measureRow[i];
+    if (i !== shownMeasure) {
+      shownMeasure = i;
+      if (marker.parentNode !== strips[row].layer) strips[row].layer.append(marker);
+      box(marker, row, m[1], m[2], m[3], m[4]);
+      $('mno').textContent = label(i);
+      $('munit').hidden = label(i) === '弱起';
+      secUi(i);
+    }
+    // 1・2・3 は原譜の小節番号、くり返しのある曲は 2 回目かどうか
+    const head = D.cut ? '原譜 ' + label(origNo(i)) + ' ・ ' : D.passes && D.passes[i] > 1 ? 'くり返し ' + D.passes[i] + '回目 ・ ' : '';
+    $('row2').textContent = head + clock(tick * spt()) + ' / ' + clock(D.endTick * spt());
+    paintNotes(bsearch(D.segTick, look));
+    // 段が変わったとき、その段が画面に入っていなければスクロール
+    if (row !== playRow) {
+      playRow = row;
+      if (follow && !picking) reveal(row);
+    }
+  }
+
+  // ---- 音（ブラウザの中で、録音したピアノの音 = Salamander Grand Piano を組み合わせて鳴らす） ----
+  let ac = null, staffGain = [], metroGain = null, master = null, pianoBuf = null, clicks = null;
+  let solo = null, soloSub = null;   // メトロノームだけの画面の音量（卓の「全体」は通らない）と、刻みの音（小さめ）
+  let timbres = [];          // [{ key, name, src?, marker?, samples?, base? }]（D.timbres の前に piano と crisp）
+  const banks = {};          // 読み込んだ音色: key → makeBank()
+  let drive = null, low = null, air = null, comp = null, lim = null;
+  const voices = new Set();
+  let anchors = [], schedTick = 0, pumpTimer = 0, keepAlive = null;
+
+  function initAudio() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return false;
+    // iPad: 音を作る前に「再生」用の音にしておく（消音モードでも鳴る。既定の ambient のままにしない）
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+    try { ac = new AC({ latencyHint: 'interactive' }); } catch (e) { ac = new AC(); }
+    // 生のピアノのそばでも聞こえるように:
+    //   iPad のスピーカーでは出ない低い音を削る（setLoudness の low）。そのぶんリミッターが低音に反応せず、全体を大きくできる
+    //   3 kHz より上（音の輪郭）を少し持ち上げる
+    //   音の大きさを少しそろえて（コンプレッサー）、ピークだけ抑えて（リミッター）、そのぶん全体を上げる。
+    //   強くかけるとラジオのような音・割れた音になるので、ほどほどに（setLoudness の値）
+    drive = ac.createGain();
+    low = ac.createBiquadFilter();
+    low.type = 'highpass'; low.Q.value = -3.01;   // Q は dB（−3 dB = 山のない形）
+    air = ac.createBiquadFilter();
+    air.type = 'highshelf'; air.frequency.value = 3000; air.gain.value = 3;
+    comp = ac.createDynamicsCompressor();
+    comp.knee.value = 12; comp.attack.value = 0.01; comp.release.value = 0.3;
+    lim = ac.createDynamicsCompressor();
+    lim.knee.value = 3; lim.ratio.value = 20; lim.attack.value = 0.003; lim.release.value = 0.25;
+    master = ac.createGain();   // 「全体」の音量。メトロノームもここを通る
+    drive.connect(low); low.connect(air); air.connect(comp); comp.connect(lim); lim.connect(master);
+    const out = guard();
+    master.connect(out);
+    setLoudness();
+    metroGain = ac.createGain();
+    metroGain.connect(master);
+    solo = ac.createGain();
+    solo.connect(out);
+    soloSub = ac.createGain();
+    soloSub.gain.value = 0.5;   // 刻み（拍と拍のあいだ）は −6 dB
+    soloSub.connect(solo);
+    setMetroGain();
+    makeStaffGains();
+    return true;
+  }
+  // 段ごとの音量のつまみ（曲を切りかえたら、その曲の段の数で作りなおす）
+  function makeStaffGains() {
+    for (const g of staffGain) g.disconnect();
+    staffGain = D.staves.map(() => { const g = ac.createGain(); g.connect(drive); return g; });
+    applyMix(true);
+  }
+  // 音の大きさ 2 とおり。low = 削る低い音（Hz）、g = drive、thr / ratio = コンプレッサー、lim = リミッター（dBFS）
+  // player_harness.js で測った値（♩=120、小節 1–10 / 40–50 / 100–110、全部の段。2026-10-11）:
+  //   ふつう: RMS −14〜−15 dBFS、iPad で聞こえる大きさ（200 Hz より上・耳の重み）−15〜−16、ひずみ −34〜−35 dB
+  //   大きく: RMS −13.6〜−14.3 dBFS、聞こえる大きさ −14.3〜−14.9、ひずみ −31〜−32 dB
+  //   （前の MS Basic のピアノでは ふつう −15.7〜−17.4 / −36〜−37 dB、大きく −14.7〜−15.8 / −32〜−33 dB。
+  //    5 kHz より上の音は 5〜7 dB 多くなった）
+  // ピークはどちらも −1 dBFS ほど。これより drive を上げても、大きさはほとんど変わらずひずみだけが増える
+  const LOUDNESS = {
+    normal: { low: 120, g: 0.55, thr: -24, ratio: 2.5, lim: -6 },
+    loud: { low: 180, g: 1.1, thr: -32, ratio: 4, lim: -7 },
+  };
+  function setLoudness() {
+    const s = LOUDNESS[mix.loud ? 'loud' : 'normal'];
+    const t = ac.currentTime;
+    drive.gain.setTargetAtTime(s.g, t, 0.02);
+    low.frequency.setValueAtTime(s.low, t);
+    comp.threshold.setValueAtTime(s.thr, t); comp.ratio.setValueAtTime(s.ratio, t);
+    lim.threshold.setValueAtTime(s.lim, t);
+  }
+  // 最後の守り: 0.85 までは何もせず、それより大きいところだけやわらかく抑える（音が割れないように）
+  function guard() {
+    const n = 4096, c = new Float32Array(n), k = 0.85;
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * 2 - 1, a = Math.abs(x);
+      c[i] = Math.sign(x) * (a <= k ? a : k + (1 - k) * Math.tanh((a - k) / (1 - k)));
+    }
+    const w = ac.createWaveShaper();
+    w.curve = c;
+    w.oversample = '2x';
+    w.connect(ac.destination);
+    return w;
+  }
+  function decode(ab) {
+    return new Promise((res, rej) => {
+      const p = ac.decodeAudioData(ab, res, rej);
+      if (p && p.then) p.then(res, rej);
+    });
+  }
+  // 音声を読み込む（label のあとに読み込みの % を出す）→ AudioBuffer
+  async function fetchAudio(src, label) {
+    const res = await fetch(src);
+    if (!res.ok) throw new Error(String(res.status));
+    const total = +res.headers.get('content-length') || 0;
+    let ab;
+    if (res.body && res.body.getReader && total) {
+      const rd = res.body.getReader();
+      const buf = new Uint8Array(total);
+      let got = 0;
+      for (;;) {
+        const { done, value } = await rd.read();
+        if (done) break;
+        buf.set(value, got); got += value.length;
+        toast(label + ' ' + Math.round((got / total) * 100) + '%', 60000);
+      }
+      ab = buf.buffer.slice(0, got);
+    } else {
+      ab = await res.arrayBuffer();
+    }
+    return decode(ab);
+  }
+  // 頭の目印のクリックから、音の位置のずれ（変換でつく無音）を合わせる → 目印の時刻（秒）
+  function markerAt(buf, fallback) {
+    const d = buf.getChannelData(0), n = Math.min(d.length, Math.round(buf.sampleRate));
+    for (let i = 0; i < n; i++) if (Math.abs(d[i]) > 0.45) return i / buf.sampleRate;
+    return fallback;
+  }
+  // 音色 1 つぶん: 音声と、強さごと・高さ順の音 [{ p: 高さ, v: velocity, o: 位置, len: 長さ, c: 音程の補正 セント }]
+  function makeBank(buf, list, base) {
+    const samples = list.map(([p, v, o, len, c]) => ({ p, v, o: base + o, len, c: c || 0 }));
+    const vels = [...new Set(samples.map((s) => s.v))].sort((a, b) => a - b);
+    return { buf, vels, by: vels.map((v) => samples.filter((s) => s.v === v).sort((a, b) => a.p - b.p)) };
+  }
+  async function loadPiano() {
+    const buf = await fetchAudio(D.piano.src, 'ピアノの音を読み込み中');
+    const base = markerAt(buf, D.piano.marker);
+    banks.piano = makeBank(buf, D.piano.samples, base);
+    // メトロノームの音（種類ごとに [小節の頭, ほかの拍]）も同じ音声の中にある
+    clicks = {};
+    for (const [kind, list] of Object.entries(D.piano.clicks)) clicks[kind] = list.map(([o, len]) => ({ o: base + o, len }));
+    pianoBuf = buf;
+    if (ac.sampleRate < 32000) toast('この画面では音が低い音質（' + ac.sampleRate / 1000 + ' kHz）になっています。Safari で開くと良くなることがあります', 10000);
+    else if (metroMode) toast('スタートでメトロノームが鳴ります', 3000);
+    else toast('小節をタップするとそこから再生、再生中にタップすると止まります', 5000);
+    ui();
+    if (mix.timbre !== 'piano') setTimbre(mix.timbre);
+  }
+
+  // ---- 音色 ----
+  // piano と crisp はいつも読み込んであるピアノの音。ほかは選んだときに読み込む（iPad のメモリのため、ほかの音色は 2 つまで残す）
+  const loading = {};
+  let recent = [];
+  const timbreOf = (key) => timbres.find((t) => t.key === key);
+  const bankKey = (t) => t.base || t.key;
+  function currentBank() {
+    const t = timbreOf(mix.timbre);
+    return (t && banks[bankKey(t)]) || banks.piano;
+  }
+  function ensureBank(key) {
+    const t = timbreOf(key);
+    if (!t) return Promise.reject(new Error(key));
+    const k = bankKey(t);
+    if (banks[k]) return Promise.resolve(banks[k]);
+    if (!loading[k]) {
+      loading[k] = fetchAudio(t.src, t.name + 'の音を読み込み中').then((buf) => {
+        banks[k] = makeBank(buf, t.samples, markerAt(buf, t.marker));
+        recent = [k].concat(recent.filter((x) => x !== k));
+        for (const old of recent.slice(2)) delete banks[old];
+        recent = recent.slice(0, 2);
+        return banks[k];
+      }).finally(() => { delete loading[k]; });
+    }
+    return loading[k];
+  }
+  async function setTimbre(key) {
+    if (!timbreOf(key)) key = 'piano';
+    mix.timbre = key;
+    saveMix();
+    if (!pianoBuf) { showTimbre(); return; }   // ピアノの音を読み込んだあとで（loadPiano の最後）
+    const name = timbreOf(key).name;
+    const ready = ensureBank(key);
+    showTimbre();   // 読み込み中の音色は薄く
+    try {
+      await ready;
+    } catch (e) {
+      showTimbre();
+      toast(name + 'の音を読み込めませんでした。もう一度えらんでください');
+      return;
+    }
+    showTimbre();
+    if (mix.timbre !== key) return;   // 読み込んでいる間に、ほかの音色をえらんだ
+    if (!metroMode) toast('音色: ' + name, 1500);
+    retempo();   // 予約ずみの音も、新しい音色で鳴らしなおす
+  }
+  function showTimbre() {
+    $('mixRows').querySelectorAll('.chips button').forEach((b) => {
+      const t = timbreOf(b.dataset.k);
+      b.setAttribute('aria-pressed', String(t.key === mix.timbre));
+      b.setAttribute('aria-busy', String(!!loading[bankKey(t)]));
+    });
+  }
+
+  function pick(b, pitch, vel) {
+    let li = 0;
+    for (let k = 1; k < b.vels.length; k++) if (Math.abs(b.vels[k] - vel) < Math.abs(b.vels[li] - vel)) li = k;
+    const list = b.by[li];
+    let s = list[0];
+    for (const x of list) if (Math.abs(x.p - pitch) < Math.abs(s.p - pitch)) s = x;
+    return s;
+  }
+  // くっきりピアノ: 鍵盤を押したままでも、after 秒から floor（の音量）へ時定数 tc 秒で小さくする（次の音と重ならず、1 音ずつ聞こえるように）
+  const CRISP = { after: 0.05, tc: 0.2, floor: 0.3 };
+  function playNote(k, pitch, vel, when, dur) {
+    const b = currentBank();
+    if (mix.flat) vel = b.vels[b.vels.length - 1];   // ぜんぶ強く: その音色のいちばん強い音
+    const s = pick(b, pitch, vel);
+    const rate = Math.pow(2, (pitch - s.p) / 12 + s.c / 1200);
+    const now = ac.currentTime;
+    const t0 = Math.max(when, now);
+    const skip = (t0 - when) * rate;
+    const avail = s.len - skip;
+    if (avail <= 0.02) return;
+    const src = ac.createBufferSource();
+    src.buffer = b.buf;
+    src.playbackRate.value = rate;
+    const g = ac.createGain();
+    const level = Math.min(1.6, Math.pow(vel / s.v, 1.7));
+    g.gain.setValueAtTime(level, t0);
+    const off = Math.max(t0 + 0.03, when + dur);
+    if (mix.timbre === 'crisp' && off > t0 + CRISP.after) g.gain.setTargetAtTime(level * CRISP.floor, t0 + CRISP.after, CRISP.tc);
+    g.gain.setTargetAtTime(0, off, 0.07);   // 鍵盤から指を離したあとの消え方
+    src.connect(g);
+    g.connect(staffGain[k]);   // 録音がステレオなので、左右の広がりはそのまま
+    src.start(t0, s.o + skip, avail);
+    try { src.stop(Math.min(off + 0.7, t0 + avail / rate)); } catch (e) {}
+    const v = { src, g, when: t0 };
+    voices.add(v);
+    src.onended = () => { voices.delete(v); try { g.disconnect(); } catch (e) {} };
+  }
+  function playClick(accent, when) {
+    const c = (clicks[mix.mtype] || clicks.wood)[accent ? 0 : 1];
+    const src = ac.createBufferSource();
+    src.buffer = pianoBuf;
+    src.connect(metroGain);
+    const t0 = Math.max(when, ac.currentTime);
+    src.start(t0, c.o, c.len);
+    const v = { src, g: null, when: t0 };
+    voices.add(v);
+    src.onended = () => voices.delete(v);
+  }
+  function silence(quick) {
+    const now = ac.currentTime;
+    for (const v of voices) {
+      try {
+        if (v.g && !quick) {
+          v.g.gain.cancelScheduledValues(now);
+          v.g.gain.setTargetAtTime(0, now, 0.02);
+          v.src.stop(now + 0.15);
+        } else v.src.stop();
+      } catch (e) {}
+    }
+    voices.clear();
+  }
+
+  // 予約: いまから AHEAD 秒先までの音とクリックを鳴らす予定に入れる。区間リピートの終わりで頭に戻す
+  function scheduleRange(t0, t1, a) {
+    const lEnd = loop ? mEnd(loop.b) : Infinity;
+    for (let k = 0; k < D.notes.length; k++) {
+      if (!mix.on[k] || mix.vol[k] <= 0) continue;
+      const st = starts[k], arr = D.notes[k];
+      for (let i = lowerBound(st, t0); i < st.length && st[i] < t1; i++) {
+        // 分散和音のずれは秒で足す（テンポによらず同じ）。音の終わりはずらさない
+        const delay = arr[NF * i + 4] / 1000;
+        const dur = Math.min(arr[NF * i + 1], lEnd - st[i]) * a.spt;
+        playNote(k, arr[NF * i + 2], arr[NF * i + 3], a.t + (st[i] - a.tick) * a.spt + delay, Math.max(0.05, dur - delay));
+      }
+    }
+    if (mix.mon && mix.mvol > 0) {
+      for (let i = lowerBound(D.beatTick, t0); i < D.beatTick.length && D.beatTick[i] < t1; i++) {
+        playClick(D.beats[i][1], a.t + (D.beatTick[i] - a.tick) * a.spt);
+      }
+    }
+  }
+  function pump() {
+    if (!playing) return;
+    const horizon = ac.currentTime + AHEAD;
+    let a = anchors[anchors.length - 1];
+    for (let guard = 0; guard < 4; guard++) {
+      let to = Math.min(D.endTick, a.tick + (horizon - a.t) / a.spt);
+      const lEnd = loop ? mEnd(loop.b) : Infinity;
+      const wrap = loop && schedTick < lEnd && to >= lEnd;
+      if (wrap) to = lEnd;
+      if (to > schedTick) { scheduleRange(schedTick, to, a); schedTick = to; }
+      if (!wrap) break;
+      a = { t: a.t + (lEnd - a.tick) * a.spt, tick: mStart(loop.a), spt: a.spt };
+      anchors.push(a);
+      schedTick = a.tick;
+    }
+    if (anchors.length > 8) anchors.splice(0, anchors.length - 8);
+    if (!loop && schedTick >= D.endTick && ac.currentTime > a.t + (D.endTick - a.tick) * a.spt + 1.5) finish();
+  }
+  function outLatency() { return (ac.outputLatency || 0) + (ac.baseLatency || 0); }
+  function tickAt(t) {
+    let a = anchors[0];
+    for (const x of anchors) if (x.t <= t) a = x;
+    return a.tick + Math.max(0, t - a.t) / a.spt;
+  }
+  function nowTick() {
+    return playing && ac ? Math.min(D.endTick - 1, tickAt(ac.currentTime - outLatency())) : posTick;
+  }
+
+  // iPad: タップの中で音を出せる状態にする（消音モードでも鳴るように「再生」用の音にする）
+  function wakeAudio() {
+    let session = false;
+    try {
+      if (navigator.audioSession) {
+        navigator.audioSession.type = 'playback';
+        session = navigator.audioSession.type === 'playback';
+      }
+    } catch (e) {}
+    if (ac.state !== 'running') ac.resume().then(audioState, () => {});
+    // 「再生」用にできなかったとき（Safari でも、このページのように枠の中で開くと auto のまま。
+    // そのままだと着信音と同じあつかいで、音量が小さかった。2026-10-17）は、無音の音声を流して「再生」用にする
+    if (!session) {
+      if (!keepAlive) {
+        keepAlive = new Audio(silentWav());
+        keepAlive.loop = true;
+      }
+      keepAlive.play().catch(() => {});
+    }
+    audioState();
+  }
+  // 無音の WAV。iOS はページの音全体をこの音と同じ質にまぜてしまうので、音と同じサンプリング周波数・16 bit・ステレオで
+  // （前は 8 kHz・8 bit・モノラルで、電話より悪い「ラジオのような」音になっていたおそれがある。2026-10-17）
+  function silentWav() {
+    const sr = Math.round(ac.sampleRate), n = Math.round(sr * 0.25) * 4;
+    const b = new ArrayBuffer(44 + n), v = new DataView(b);   // データの部分は 0（無音）のまま
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVE'); w(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 2, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 4, true); v.setUint16(32, 4, true); v.setUint16(34, 16, true);
+    w(36, 'data'); v.setUint32(40, n, true);
+    return URL.createObjectURL(new Blob([b], { type: 'audio/wav' }));
+  }
+
+  function startAt(tick) {
+    tick = Math.max(0, Math.min(tick, D.endTick - 1));
+    posTick = tick;
+    if (!ac || !pianoBuf) {
+      render(tick);
+      if (ac) toast('ピアノの音を準備中です。少し待ってから ▶ を押してください');
+      return;
+    }
+    wakeAudio();
+    silence(false);
+    anchors = [{ t: ac.currentTime + 0.08, tick, spt: spt() }];
+    schedTick = tick;
+    playing = true;
+    clearInterval(pumpTimer);
+    pumpTimer = setInterval(pump, 30);
+    pump();
+    render(tick);
+    if (follow) reveal(playRow);
+    ui(); keepAwake(true); tick_();
+  }
+  function pause() {
+    if (!playing) return;
+    posTick = nowTick();
+    playing = false;
+    clearInterval(pumpTimer);
+    silence(false);
+    if (keepAlive) keepAlive.pause();
+    ui(); keepAwake(false);
+    render(posTick);
+  }
+  function finish() {
+    playing = false;
+    clearInterval(pumpTimer);
+    if (keepAlive) keepAlive.pause();
+    posTick = 0;
+    ui(); keepAwake(false);
+    render(D.endTick - 1);
+  }
+  function tick_() {
+    cancelAnimationFrame(raf);
+    const step = () => {
+      if (!playing) return;
+      render(nowTick());
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+  }
+  // 再生中にテンポを変える: まだ鳴っていない予約を取り消して、いまの位置から新しいテンポで予約しなおす
+  function retempo() {
+    if (!playing) { render(posTick); return; }
+    const t = ac.currentTime + 0.03;
+    const tk = tickAt(t);
+    for (const v of [...voices]) if (v.when > t) { try { v.src.stop(); } catch (e) {} voices.delete(v); }
+    anchors.push({ t, tick: tk, spt: spt() });
+    schedTick = tk;
+    pump();
+  }
+
+  // ---- 音の出し方 ----
+  const curve = (v) => Math.pow(v / 100, 2);
+  function applyMix(now) {
+    if (!ac) return;
+    const t = ac.currentTime, tc = now ? 0.001 : 0.03;
+    staffGain.forEach((g, k) => g.gain.setTargetAtTime(mix.on[k] ? curve(mix.vol[k]) : 0, t, tc));
+    metroGain.gain.setTargetAtTime(mix.mon ? curve(mix.mvol) : 0, t, tc);
+    master.gain.setTargetAtTime(mix.aon ? curve(mix.avol) : 0, t, tc);
+  }
+  const ICON_SPK = '<path d="M4 9h4l5-4v14l-5-4H4zM15.5 8.5a5 5 0 0 1 0 7l-1.4-1.4a3 3 0 0 0 0-4.2zM18.3 5.7a9 9 0 0 1 0 12.6l-1.4-1.4a7 7 0 0 0 0-9.8z"/>';
+  const ICON_OFF = '<path d="M4 9h4l5-4v14l-5-4H4zM15.3 9.7l1.4-1.4 2.3 2.3 2.3-2.3 1.4 1.4-2.3 2.3 2.3 2.3-1.4 1.4-2.3-2.3-2.3 2.3-1.4-1.4 2.3-2.3z"/>';
+  function buildMixer() {
+    const rows = $('mixRows');
+    // 音の大きさ: ふつう（音がきれい）/ 大きく（少しかたい音になる）
+    rows.append(choice('音の大きさ', [['normal', 'ふつう'], ['loud', '大きく']], () => (mix.loud ? 'loud' : 'normal'), (v) => {
+      mix.loud = v === 'loud';
+      if (ac) setLoudness();
+    }));
+    // 強弱: 楽譜どおり / ぜんぶ強く（pp も ff も同じ、いちばん強い音で）
+    rows.append(choice('強弱', [['score', '楽譜どおり'], ['flat', 'ぜんぶ強く']], () => (mix.flat ? 'flat' : 'score'), (v) => {
+      mix.flat = v === 'flat';
+      retempo();   // 予約ずみの音も、新しい強さで鳴らしなおす
+    }));
+    // 音色（1 音ずつ聞きやすい音をさがす聞きくらべ用。再生中に切りかえられる）
+    const tone = document.createElement('div');
+    tone.className = 'mix-tone';
+    tone.setAttribute('role', 'group');
+    tone.setAttribute('aria-label', '音色');
+    tone.innerHTML = '<span>音色</span><div class="chips"></div>';
+    for (const t of timbres) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.k = t.key;
+      b.textContent = t.name;
+      b.addEventListener('click', () => setTimbre(t.key));
+      tone.querySelector('.chips').append(b);
+    }
+    rows.append(tone);
+    showTimbre();
+    // k: 0〜3 = 段、-1 = メトロノーム、-2 = 全体
+    const items = [{ name: '全体', k: -2 }].concat(D.staves.map((name, k) => ({ name, k })), [{ name: 'メトロノーム', k: -1 }]);
+    const ref = (k) => (k === -2 ? ['aon', 'avol'] : k === -1 ? ['mon', 'mvol'] : null);
+    for (const { name, k } of items) {
+      const row = document.createElement('div');
+      row.className = 'mix-row' + (k === -1 ? ' metro' : k === -2 ? ' all' : '');
+      const id = 'vol' + (k === -1 ? 'M' : k === -2 ? 'A' : k);
+      row.innerHTML = '<button class="ibtn" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"></svg></button>' +
+        '<label class="mix-name" for="' + id + '"></label><span class="mix-val"></span>' +
+        '<input type="range" id="' + id + '" min="0" max="100" step="5">';
+      row.querySelector('.mix-name').textContent = name;
+      const btn = row.querySelector('button'), range = row.querySelector('input'), val = row.querySelector('.mix-val');
+      const get = () => (k < 0 ? { on: mix[ref(k)[0]], vol: mix[ref(k)[1]] } : { on: mix.on[k], vol: mix.vol[k] });
+      const show = () => {
+        const s = get();
+        row.dataset.on = String(s.on);
+        btn.querySelector('svg').innerHTML = s.on ? ICON_SPK : ICON_OFF;
+        btn.setAttribute('aria-label', name + (s.on ? 'の音を消す' : 'の音を出す'));
+        btn.setAttribute('aria-pressed', String(s.on));
+        range.value = s.vol;
+        val.textContent = s.vol;
+      };
+      btn.addEventListener('click', () => {
+        if (k < 0) mix[ref(k)[0]] = !mix[ref(k)[0]]; else mix.on[k] = !mix.on[k];
+        saveMix(); show();
+      });
+      range.addEventListener('input', () => {
+        const v = +range.value;
+        if (k < 0) { mix[ref(k)[1]] = v; if (v > 0) mix[ref(k)[0]] = true; }
+        else { mix.vol[k] = v; if (v > 0) mix.on[k] = true; }
+        saveMix(); show();
+      });
+      show();
+      rows.append(row);
+    }
+    rows.append(choice('メトロノームの音', [['wood', 'ウッドブロック'], ['bell', '振り子']], () => mix.mtype, (v) => { mix.mtype = v; }));
+  }
+  // 2 つからえらぶスイッチ
+  function choice(label, options, get, set) {
+    const row = document.createElement('div');
+    row.className = 'mix-mode';
+    row.setAttribute('role', 'group');
+    row.setAttribute('aria-label', label);
+    row.innerHTML = '<span></span><div class="seg2"></div>';
+    row.querySelector('span').textContent = label;
+    const seg = row.querySelector('.seg2');
+    const show = () => seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === get())));
+    for (const [v, text] of options) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.v = v;
+      b.textContent = text;
+      b.addEventListener('click', () => { set(v); saveMix(); show(); });
+      seg.append(b);
+    }
+    show();
+    return row;
+  }
+  function saveMix() { store.set('player.mix2', JSON.stringify(mix)); applyMix(false); mixUi(); }
+  function mixUi() {
+    const changed = Object.keys(DEFAULT_MIX).some((k) => JSON.stringify(mix[k]) !== JSON.stringify(DEFAULT_MIX[k])) ||
+      mix.on.some((x) => !x) || mix.vol.some((v) => v !== 100);
+    $('mixBtn').style.color = changed ? 'var(--accent)' : '';
+  }
+  // 音の出どころの状態（iPad で音が悪いときに、画面を見て原因を探せるように）
+  function audioState() {
+    if (!ac) return;
+    let s = '';
+    try { s = navigator.audioSession ? navigator.audioSession.type : 'audioSession なし'; } catch (e) {}
+    if (keepAlive && !keepAlive.paused) s += ' + 無音トラック';
+    $('audioState').textContent = '音声の状態: ' + (ac.sampleRate / 1000) + ' kHz ・ ' + s + ' ・ ' + ac.state;
+  }
+  function openMixer(open) {
+    if (open) { openJump(false); openSongs(false); audioState(); }
+    $('mixer').hidden = !open;
+    $('mixBtn').setAttribute('aria-expanded', String(open));
+  }
+  $('mixBtn').addEventListener('click', () => openMixer($('mixer').hidden));
+  $('mixClose').addEventListener('click', () => openMixer(false));
+
+  // ---- 練習番号へ移動 ----
+  // D.rehearsals = [[文字, 小節]]（小節の順）。帯のボタンにいまの練習番号を出し、押すと一覧が開く
+  let secShown = -2;
+  function secAt(i) {
+    let s = -1;
+    D.rehearsals.forEach(([, m], k) => { if (m <= i) s = k; });
+    return s;
+  }
+  function buildJump() {
+    const grid = $('rgrid');
+    D.rehearsals.forEach(([t, i], k) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.k = k;
+      b.innerHTML = '<span class="rbox"></span><small></small>';
+      b.querySelector('.rbox').textContent = t;
+      b.querySelector('small').textContent = label(i) + (i ? ' 小節' : '');
+      b.setAttribute('aria-label', t + '（' + label(i) + (i ? ' 小節' : '') + '）へ移動');
+      b.addEventListener('click', () => jumpTo(i));
+      grid.append(b);
+    });
+    $('rehBtn').hidden = !D.rehearsals.length;
+  }
+  function secUi(i) {
+    const s = secAt(i);
+    if (s === secShown) return;
+    secShown = s;
+    const t = s < 0 ? '–' : D.rehearsals[s][0];
+    $('rehNow').textContent = t;
+    $('rehBtn').setAttribute('aria-label', '練習番号へ移動' + (s < 0 ? '' : '（いまは ' + t + '）'));
+    $('rgrid').querySelectorAll('button').forEach((b) => b.setAttribute('aria-current', String(+b.dataset.k === s)));
+  }
+  function openJump(open) {
+    if (open) { openMixer(false); openSongs(false); }
+    $('jump').hidden = !open;
+    $('rehBtn').setAttribute('aria-expanded', String(open));
+  }
+  // 止まっているときはその小節へ移るだけ、再生中はそこから続けて再生。区間をえらんでいる間は、その段を見せるだけ（そこで小節をタップ）
+  function jumpTo(i) {
+    openJump(false);
+    const row = D.measureRow[i];
+    if (picking) { reveal(row, true); return; }
+    follow = true; $('followPill').hidden = true;
+    if (playing) startAt(mStart(i));
+    else { posTick = mStart(i); render(posTick); }
+    reveal(row);
+    marker.classList.remove('flash');
+    void marker.offsetWidth;   // 同じ小節にもう一度移ったときも光らせる
+    marker.classList.add('flash');
+  }
+  marker.addEventListener('animationend', () => marker.classList.remove('flash'));
+  $('rehBtn').addEventListener('click', () => openJump($('jump').hidden));
+  $('jumpClose').addEventListener('click', () => openJump(false));
+
+  // ---- テンポ（曲ごとに覚える。1・2・3 は前からの player.tempo） ----
+  const pct = (k) => Math.round((k / D.original) * 100);
+  const tempoKey = () => (song.key === '123' ? 'player.tempo' : 'player.tempo.' + song.key);
+  function choose(k) {
+    k = +k;
+    if (!D.tempos.includes(k)) return;
+    bpm = k;
+    store.set(tempoKey(), String(k));
+    tempoUi();
+    retempo();
+  }
+  $('slower').addEventListener('click', () => { const i = D.tempos.indexOf(bpm); if (i > 0) choose(D.tempos[i - 1]); });
+  $('faster').addEventListener('click', () => { const i = D.tempos.indexOf(bpm); if (i < D.tempos.length - 1) choose(D.tempos[i + 1]); });
+  $('tsel').addEventListener('change', (e) => choose(e.target.value));
+
+  // ---- 帯の表示 ----
+  const ICON_PLAY = '<path d="M8 5.2v13.6a.7.7 0 0 0 1.06.6l10.9-6.8a.7.7 0 0 0 0-1.2L9.06 4.6A.7.7 0 0 0 8 5.2z"/>';
+  const ICON_PAUSE = '<path d="M6.5 5h3.6v14H6.5zM13.9 5h3.6v14h-3.6z"/>';
+  const ICON_STOP = '<path d="M6.5 6.5h11v11h-11z"/>';
+  function ui() {
+    if (metroMode) {
+      $('playIcon').innerHTML = MT.on ? ICON_STOP : ICON_PLAY;
+      $('play').setAttribute('aria-label', MT.on ? 'メトロノームを止める' : 'メトロノームを鳴らす');
+    } else {
+      $('playIcon').innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
+      $('play').setAttribute('aria-label', playing ? '一時停止' : '再生');
+    }
+    $('play').setAttribute('aria-busy', pianoBuf ? 'false' : 'true');
+    $('mGo').setAttribute('aria-busy', pianoBuf ? 'false' : 'true');
+    if (!playing) $('followPill').hidden = true;
+  }
+  function tempoUi() {
+    const sel = $('tsel');
+    if (!sel.options.length) {
+      for (const k of D.tempos) {
+        const o = document.createElement('option');
+        o.value = String(k);
+        o.textContent = beatNote() + '=' + k + (!D.original ? '' : k === D.original ? '（原曲）' : '（原曲の ' + pct(k) + '%）');
+        sel.append(o);
+      }
+    }
+    sel.value = String(bpm);
+    $('tnum').textContent = beatNote() + '=' + bpm;
+    const i = D.tempos.indexOf(bpm);
+    $('slower').disabled = i <= 0;
+    $('faster').disabled = i >= D.tempos.length - 1;
+  }
+  function loopUi() {
+    const b = $('loop');
+    b.setAttribute('aria-pressed', String(!!loop || picking > 0));
+    b.textContent = loop ? '𝄆 ' + label(loop.a) + '–' + label(loop.b) + ' 𝄇' : '𝄆 区間';
+    b.setAttribute('aria-label', loop ? label(loop.a) + 'から' + label(loop.b) + '小節をくり返し中。押すと解除' : '区間リピート');
+    $('banner').hidden = picking === 0;
+    if (picking === 1) $('bannerText').textContent = 'くり返す区間の、はじめの小節をタップ';
+  }
+  $('loop').addEventListener('click', () => {
+    if (loop || picking) { loop = null; picking = 0; pickA = -1; }
+    else picking = 1;
+    drawLoop(); loopUi();
+  });
+  $('bannerCancel').addEventListener('click', () => { picking = 0; pickA = -1; drawLoop(); loopUi(); });
+
+  let toastTimer = 0;
+  function toast(msg, ms = 3500) {
+    const t = $('toast');
+    t.textContent = msg; t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.hidden = true; }, ms);
+  }
+
+  async function keepAwake(on) {
+    tellHost(playing || MT.on);
+    try {
+      if (on && !wake && navigator.wakeLock) {
+        wake = await navigator.wakeLock.request('screen');
+        wake.addEventListener('release', () => { wake = null; });
+      } else if (!on && wake) {
+        await wake.release(); wake = null;
+      }
+    } catch (e) { wake = null; }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && (playing || MT.on)) keepAwake(true);
+  });
+
+  // 全画面（使える環境だけ。iPad の Claude アプリの中では使えない）
+  const root = document.documentElement;
+  if (document.fullscreenEnabled || document.webkitFullscreenEnabled) {
+    $('fs').hidden = false;
+    $('fs').addEventListener('click', () => {
+      const inFs = document.fullscreenElement || document.webkitFullscreenElement;
+      try {
+        const r = inFs
+          ? (document.exitFullscreen || document.webkitExitFullscreen).call(document)
+          : (root.requestFullscreen || root.webkitRequestFullscreen).call(root);
+        if (r && r.catch) r.catch(() => toast('この画面では全画面にできません'));
+      } catch (e) { toast('この画面では全画面にできません'); }
+    });
+  }
+
+  $('play').addEventListener('click', () => {
+    if (metroMode) { if (MT.on) stopMetro(); else startMetro(); return; }
+    if (!D) return;
+    if (playing) pause();
+    else { follow = true; startAt(posTick); }
+  });
+  $('toStart').addEventListener('click', () => {
+    if (!D) return;
+    follow = true;
+    if (playing) startAt(0);
+    else { posTick = 0; render(0); $('view').scrollTo({ top: 0, behavior: reduceMotion.matches ? 'auto' : 'smooth' }); }
+  });
+  addEventListener('keydown', (e) => {
+    if (e.target.closest && e.target.closest('input, textarea, select')) return;
+    if (e.code === 'Space') { e.preventDefault(); $('play').click(); }
+    else if (e.key === 'Escape') { openMixer(false); openJump(false); openSongs(false); }
+    else if (metroMode) {
+      // メトロノームだけのとき: ↑ → ではやく、↓ ← でおそく（1 ずつ）
+      const d = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 }[e.key];
+      if (d) { e.preventDefault(); setBpm(ms.bpm + d); }
+    }
+    else if (D && /^[a-z]$/i.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // キーボードの A, B, … でも練習番号へ（PC のブラウザ用）
+      const r = D.rehearsals.find(([t]) => t === e.key.toUpperCase());
+      if (r) jumpTo(r[1]);
+    }
+  });
+
+  // ---- メトロノームだけ（楽譜もピアノもなし。テンポ・拍子・刻みを自由に） ----
+  // 曲の一覧の「メトロノーム」でこの画面に。いまの曲の楽譜と位置はそのまま残しておき、曲をえらぶと戻る。
+  // 音は楽譜のときのメトロノームと同じ録音（piano.mp4 の後ろ。ピーク −1〜−4 dBFS なので音量 100 = 録音そのまま）。
+  // 音量・音の種類は楽譜のときとは別にしまう（player.metro）。卓の「全体」も通らない
+  const METRO = { key: 'metro', name: 'メトロノーム', title: 'メトロノームだけ', note: '楽譜なし。テンポ・拍子を自由に' };
+  const MBPM = [30, 240];
+  const METERS = [[1, 'なし', '拍子なし（頭の音を変えない）'], [2, '2'], [3, '3'], [4, '4'], [5, '5'], [6, '6']];
+  const SUBS = [[1, 'なし', '刻みなし'], [2, '8分', '8分音符'], [3, '3連', '3連符'], [4, '16分', '16分音符']];
+  const MTYPES = [['wood', 'ウッドブロック'], ['bell', '振り子']];
+  const ms = { bpm: 120, beats: 4, sub: 1, type: 'wood', vol: 100 };
+  try { Object.assign(ms, JSON.parse(store.get('player.metro') || '{}')); } catch (e) {}
+  let metroMode = store.get('player.mode') === 'metro';
+  // q: 予約した音 { t: 時刻, type: 0 = 小節の頭 / 1 = 拍 / 2 = 刻み, beat, bar, src }（時刻の順）
+  const MT = { on: false, t0: 0, next: 0, idx: 0, q: [], timer: 0, raf: 0, cur: null, txt: '' };
+  const subDur = () => 60 / ms.bpm / ms.sub;
+  function saveMetro() { store.set('player.metro', JSON.stringify(ms)); }
+  function setMetroGain() { if (solo) solo.gain.setTargetAtTime(curve(ms.vol), ac.currentTime, 0.02); }
+  function setBpm(v) {
+    v = Math.max(MBPM[0], Math.min(MBPM[1], Math.round(v)));
+    if (!(v >= MBPM[0]) || v === ms.bpm) return;
+    ms.bpm = v;
+    saveMetro(); metroUi(); metroRetime();
+  }
+  function metroClick(type, when) {
+    const c = (clicks[ms.type] || clicks.wood)[type === 0 ? 0 : 1];
+    const src = ac.createBufferSource();
+    src.buffer = pianoBuf;
+    src.connect(type === 2 ? soloSub : solo);
+    src.start(Math.max(when, ac.currentTime), c.o, c.len);
+    return src;
+  }
+  function metroPump() {
+    if (!MT.on) return;
+    const now = ac.currentTime, horizon = now + AHEAD;
+    // 画面が止まっていたなどで遅れたら、鳴らしそこねた分はとばす（あとからまとめて鳴らさない）
+    if (MT.next < now - 0.05) {
+      const n = Math.ceil((now - MT.next) / subDur());
+      MT.idx += n; MT.next += n * subDur();
+    }
+    while (MT.next < horizon) {
+      const per = ms.beats * ms.sub, k = MT.idx % per;
+      const beat = Math.floor(k / ms.sub), bar = Math.floor(MT.idx / per);
+      const type = k % ms.sub ? 2 : beat === 0 && ms.beats > 1 ? 0 : 1;
+      MT.q.push({ t: MT.next, type, beat, bar, src: metroClick(type, MT.next) });
+      MT.idx++;
+      MT.next += subDur();
+    }
+    while (MT.q.length > 1 && MT.q[0].t < now - 5) MT.q.shift();
+  }
+  // テンポや音を変えたとき: まだ鳴っていない予約を取り消して、最後に鳴った音から新しい間隔で続ける
+  function metroRetime() {
+    if (!MT.on) return;
+    const cut = ac.currentTime + 0.02;
+    while (MT.q.length && MT.q[MT.q.length - 1].t > cut) {
+      try { MT.q.pop().src.stop(); } catch (e) {}
+      MT.idx--;
+    }
+    const last = MT.q[MT.q.length - 1];
+    MT.next = last ? last.t + subDur() : MT.t0;
+    metroPump();
+  }
+  function haltMetro() {
+    clearInterval(MT.timer);
+    cancelAnimationFrame(MT.raf);
+    const now = ac ? ac.currentTime : 0;
+    for (const e of MT.q) if (e.t > now) { try { e.src.stop(); } catch (er) {} }
+    MT.q = [];
+  }
+  function startMetro() {
+    if (!ac || !pianoBuf) { toast(ac ? 'メトロノームの音を準備中です。少し待ってから押してください' : 'この画面では音を鳴らせません'); return; }
+    haltMetro();
+    wakeAudio();
+    MT.on = true; MT.idx = 0; MT.cur = null; MT.txt = '';
+    MT.t0 = MT.next = ac.currentTime + 0.1;
+    metroPump();
+    MT.timer = setInterval(metroPump, 30);
+    MT.raf = requestAnimationFrame(metroFrame);
+    keepAwake(true);
+    ui(); metroUi();
+  }
+  function stopMetro() {
+    if (!MT.on) return;
+    haltMetro();
+    MT.on = false;
+    if (keepAlive) keepAlive.pause();
+    keepAwake(false);
+    ui(); metroUi();
+  }
+  // 拍子・刻みを変えたら、鳴っていれば頭からやりなおす
+  function restartMetro() { if (MT.on) startMetro(); }
+  // いま鳴っている拍のランプをつける（音の出るのに合わせて）
+  function metroFrame() {
+    if (!MT.on) return;
+    const t = ac.currentTime - outLatency();
+    let cur = null;
+    for (const e of MT.q) { if (e.t > t) break; if (e.type !== 2) cur = e; }
+    if (cur && cur !== MT.cur) { MT.cur = cur; light(cur.beat, cur.bar); }
+    const txt = cur ? cur.bar + '|' + clock(t - MT.t0) : '';
+    if (txt !== MT.txt) { MT.txt = txt; metroWhere(cur, t); }
+    MT.raf = requestAnimationFrame(metroFrame);
+  }
+  function light(b, bar) {
+    const lamps = $('mBeats').children;
+    for (let k = 0; k < lamps.length; k++) {
+      // 拍子なし（ランプ 1 つ）は、動きを減らす設定のとき 1 拍ごとに点いたり消えたり
+      const on = k === b && !(lamps.length === 1 && reduceMotion.matches && bar % 2);
+      lamps[k].classList.toggle('on', on);
+    }
+    const el = lamps[b];
+    if (!el) return;
+    el.classList.remove('hit');
+    void el.offsetWidth;   // 同じランプでも毎回はずませる
+    el.classList.add('hit');
+  }
+  // 帯の表示: 鳴っている間は「何小節目・何分何秒」、止まっているときは設定
+  function metroWhere(cur, t) {
+    if (cur) {
+      $('mNo').textContent = String(cur.bar + 1);
+      $('mUnit').textContent = ms.beats > 1 ? '小節目' : '拍目';
+      $('mUnit').hidden = false;
+      $('mRow2').textContent = clock(t - MT.t0);
+    } else {
+      $('mNo').textContent = '';
+      $('mUnit').hidden = true;
+      $('mRow2').textContent = (ms.beats > 1 ? ms.beats + '拍子' : '拍子なし') + ' ・ ♩=' + ms.bpm +
+        (ms.sub > 1 ? ' ・ 刻み ' + SUBS.find((s) => s[0] === ms.sub)[2] : '');
+    }
+  }
+  function metroUi() {
+    $('mBpm').textContent = String(ms.bpm);
+    $('mRange').value = String(ms.bpm);
+    $('mSlower').disabled = ms.bpm <= MBPM[0];
+    $('mFaster').disabled = ms.bpm >= MBPM[1];
+    for (const [id, key] of [['mMeter', 'beats'], ['mSub', 'sub'], ['mType', 'type']]) {
+      $(id).querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === String(ms[key]))));
+    }
+    $('mVol').value = String(ms.vol);
+    $('mVolVal').textContent = String(ms.vol);
+    const bt = $('mBeats');
+    if (bt.children.length !== ms.beats) {
+      bt.innerHTML = '';
+      for (let k = 0; k < ms.beats; k++) {
+        const i = document.createElement('i');
+        if (k === 0 && ms.beats > 1) i.className = 'acc';
+        bt.append(i);
+      }
+    }
+    $('mGo').innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + (MT.on ? ICON_STOP : ICON_PLAY) + '</svg>' + (MT.on ? 'ストップ' : 'スタート');
+    $('mGo').setAttribute('aria-pressed', String(MT.on));
+    if (!MT.on) { light(-1, 0); MT.txt = ''; metroWhere(null); }
+  }
+  // 押したままにすると続けて変わるボタン（− / +）
+  function holdRepeat(btn, fn) {
+    let t1 = 0, t2 = 0;
+    const stop = () => { clearTimeout(t1); clearInterval(t2); };
+    btn.addEventListener('pointerdown', (e) => {
+      if (e.button) return;
+      stop(); fn();
+      t1 = setTimeout(() => { t2 = setInterval(fn, 70); }, 450);
+    });
+    for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) btn.addEventListener(ev, stop);
+    btn.addEventListener('click', (e) => { if (e.detail === 0) fn(); });   // キーボードで押したとき
+    btn.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+  function buildMetro() {
+    const chips = (id, list, key, after) => {
+      for (const [v, text, aria] of list) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.dataset.v = String(v);
+        b.textContent = text;
+        if (aria) b.setAttribute('aria-label', aria);
+        b.addEventListener('click', () => {
+          if (ms[key] === v) return;
+          ms[key] = v;
+          saveMetro(); metroUi(); after();
+        });
+        $(id).append(b);
+      }
+    };
+    chips('mMeter', METERS, 'beats', restartMetro);
+    chips('mSub', SUBS, 'sub', restartMetro);
+    chips('mType', MTYPES, 'type', metroRetime);
+    holdRepeat($('mSlower'), () => setBpm(ms.bpm - 1));
+    holdRepeat($('mFaster'), () => setBpm(ms.bpm + 1));
+    $('mRange').addEventListener('input', (e) => setBpm(+e.target.value));
+    $('mVol').addEventListener('input', (e) => {
+      ms.vol = +e.target.value;
+      saveMetro(); setMetroGain();
+      $('mVolVal').textContent = String(ms.vol);
+    });
+    $('mGo').addEventListener('click', () => { if (MT.on) stopMetro(); else startMetro(); });
+    // タップでテンポ: 2 回目から、タップの間隔（最後の 6 回の平均）をテンポにする。2 秒あくと数えなおし
+    let taps = [], tapTimer = 0;
+    const tap = () => {
+      const t = performance.now();
+      if (taps.length && t - taps[taps.length - 1] > 2000) taps = [];
+      taps.push(t);
+      if (taps.length > 6) taps.shift();
+      $('mTap').textContent = '続けてタップ';
+      clearTimeout(tapTimer);
+      tapTimer = setTimeout(() => { $('mTap').textContent = 'タップでテンポ'; }, 2000);
+      if (taps.length >= 2) setBpm(60000 / ((t - taps[0]) / (taps.length - 1)));
+    };
+    $('mTap').addEventListener('pointerdown', (e) => { if (!e.button) tap(); });
+    $('mTap').addEventListener('click', (e) => { if (e.detail === 0) tap(); });   // キーボードで押したとき
+    $('metro').addEventListener('click', () => openSongs(false));
+    metroUi();
+  }
+  // メトロノームだけの画面にする / 楽譜にもどる
+  function enterMetro(on) {
+    metroMode = on;
+    store.set('player.mode', on ? 'metro' : '');
+    if (on) { if (playing) pause(); openMixer(false); openJump(false); }
+    else stopMetro();
+    $('app').classList.toggle('metro-on', on);
+    songUi(); ui(); metroUi();
+    if (!on && D) { render(nowTick()); reveal(playRow, true); }
+  }
+
+  // ---- 曲えらび ----
+  function buildSongs() {
+    for (const s of SONGS.concat([METRO])) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.k = s.key;
+      b.innerHTML = '<span></span><small></small>';
+      b.querySelector('span').textContent = s.title;
+      b.querySelector('small').textContent = s.note;
+      b.addEventListener('click', () => {
+        openSongs(false);
+        if (s === METRO) { if (!metroMode) enterMetro(true); return; }
+        if (metroMode) enterMetro(false);
+        if (s.key !== song.key) switchSong(s);
+      });
+      $('slist').append(b);
+    }
+  }
+  function songUi() {
+    const s = metroMode ? METRO : song;
+    $('songNow').textContent = s.name;
+    $('songBtn').setAttribute('aria-label', '曲をえらぶ（いまは ' + s.title + '）');
+    $('slist').querySelectorAll('button').forEach((b) => b.setAttribute('aria-current', String(b.dataset.k === s.key)));
+  }
+  function openSongs(open) {
+    if (open) { openMixer(false); openJump(false); }
+    $('songs').hidden = !open;
+    $('songBtn').setAttribute('aria-expanded', String(open));
+  }
+  $('songBtn').addEventListener('click', () => openSongs($('songs').hidden));
+  $('songsClose').addEventListener('click', () => openSongs(false));
+
+  // 曲のデータを読み込み、楽譜・卓・テンポ・練習番号を作りなおす（ピアノの音と音の出口はそのまま使う）
+  async function loadSong(s) {
+    await SRC.prepare(s);
+    const data = await SRC.json(s.dir + 'data.json');
+    if (playing) pause();
+    songGen++;
+    song = s;
+    store.set('player.song', s.key);
+    D = data;
+    SX = D.strip.x0; SW = D.strip.w;
+    N = D.measures.length; PPQ = D.ppq;
+    starts.length = 0;
+    for (const arr of D.notes) {
+      const st = [];
+      for (let i = 0; i < arr.length; i += NF) st.push(arr[i]);
+      starts.push(st);
+    }
+    D.beatTick = D.beats.map((b) => b[0]);
+    D.rehearsals = D.rehearsals || [];
+    timbres = [{ key: 'piano', name: 'グランドピアノ' }, { key: 'crisp', name: 'くっきりピアノ', base: 'piano' }].concat(D.timbres || []);
+    if (!timbreOf(mix.timbre)) mix.timbre = 'piano';
+    staffMix();
+    // 前の曲の楽譜・区間・卓・一覧を消す
+    $('view').innerHTML = '';
+    $('view').scrollTop = 0;
+    strips.length = 0; byRow.length = 0; noteEl.length = 0;
+    loop = null; picking = 0; pickA = -1; posTick = 0;
+    follow = true; playRow = -1; shownMeasure = -1; shownSeg = -1; lit = []; secShown = -2;
+    $('rgrid').innerHTML = ''; $('tsel').innerHTML = ''; $('mixRows').innerHTML = '';
+    const saved = +store.get(tempoKey());
+    const first = D.start || 120;   // はじめのテンポ（ハッピーバースデーは ♩=100）
+    bpm = D.tempos.includes(saved) ? saved : D.tempos.includes(first) ? first : D.tempos[0];
+    buildStrips();
+    buildMixer();
+    buildJump();
+    tempoUi(); ui(); loopUi(); mixUi(); songUi();
+    render(0);
+    if (ac) makeStaffGains();
+  }
+  async function switchSong(s) {
+    try {
+      await loadSong(s);
+      toast(s.title, 2000);
+    } catch (e) {
+      toast(s.title + 'を読み込めませんでした。もう一度えらんでください');
+    }
+  }
+
+  // ---- はじめ ----
+  buildSongs();
+  buildMetro();
+  if (metroMode) { $('app').classList.add('metro-on'); songUi(); ui(); }
+  loadSong(song)
+    .then(() => {
+      if (!initAudio()) { toast('この画面では音を鳴らせません'); return; }
+      loadPiano().catch(() => toast('ピアノの音を読み込めませんでした。ページを開き直してください', 8000));
+    })
+    .catch(() => {
+      $('view').innerHTML = '<p>楽譜のデータを読み込めませんでした。ページを開き直してください。</p>';
+    });
+})();
+</script>
+
+</body></html>

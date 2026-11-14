@@ -38,8 +38,11 @@
   --key-line: #c9d1dd;
   --font: "Hiragino Maru Gothic ProN", "M PLUS Rounded 1c", "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
   --r: 16px;
+  --navh: 50px;
+  --score-bar: #FAF8F7;   /* the player's bottom bar, shown under the home indicator */
   color-scheme: light;
 }
+@media (prefers-color-scheme: dark) { :root { --score-bar: #221C1E; } }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #10151d; --surface: #19212d; --ink: #edf1f7; --muted: #9ba7b9; --line: #2b3546; --soft: #222c3a;
@@ -54,7 +57,7 @@ html, body { margin: 0; }
 body {
   background: var(--bg); color: var(--ink); font-family: var(--font); font-weight: 500;
   font-size: 15px; line-height: 1.55; -webkit-text-size-adjust: 100%;
-  padding: env(safe-area-inset-top, 0px) max(16px, env(safe-area-inset-right, 0px)) calc(env(safe-area-inset-bottom, 0px) + 24px) max(16px, env(safe-area-inset-left, 0px));
+  padding: calc(env(safe-area-inset-top, 0px) + var(--navh)) max(16px, env(safe-area-inset-right, 0px)) calc(env(safe-area-inset-bottom, 0px) + 24px) max(16px, env(safe-area-inset-left, 0px));
 }
 [hidden] { display: none !important; }
 button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
@@ -185,6 +188,20 @@ input[type=text], input[type=url], input[type=number], input[type=date], select 
 .counts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .counts div { background: var(--soft); border-radius: 12px; padding: 10px; text-align: center; }
 .counts b { display: block; font-size: 26px; }
+/* top bar: switch between the practice log and the score player */
+.nav { position: fixed; top: 0; left: 0; right: 0; z-index: 30; background: var(--surface); border-bottom: 1px solid var(--line);
+  padding: env(safe-area-inset-top, 0px) max(12px, env(safe-area-inset-right, 0px)) 0 max(12px, env(safe-area-inset-left, 0px)); }
+.nav-in { height: calc(var(--navh) - 1px); display: flex; align-items: center; gap: 10px; }
+.tabs { display: flex; background: var(--soft); border-radius: 12px; padding: 3px; gap: 2px; }
+.tabs button { border: 0; background: none; border-radius: 9px; padding: 6px 18px; font-weight: 800; font-size: 15px; color: var(--muted); }
+.tabs button[aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgb(0 0 0 / .14); }
+.pill { margin-left: auto; border: 0; border-radius: 999px; padding: 6px 12px; background: color-mix(in srgb, var(--good) 18%, var(--surface));
+  color: var(--ink); font-weight: 800; font-size: 14px; display: inline-flex; gap: 7px; align-items: center; white-space: nowrap; }
+.pill i { width: 9px; height: 9px; border-radius: 50%; background: var(--good); }
+#scoreView { position: fixed; left: 0; right: 0; bottom: 0; top: calc(env(safe-area-inset-top, 0px) + var(--navh)); z-index: 10;
+  background: var(--score-bar); padding-bottom: env(safe-area-inset-bottom, 0px); }
+#scoreView iframe { width: 100%; height: 100%; border: 0; display: block; }
+body.score .wrap { display: none; }
 .guide summary { cursor: pointer; font-weight: 700; color: var(--p4); }
 .guide ol { margin: 10px 0 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
 .toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-weight: 700; font-size: 14px; max-width: calc(100% - 32px); z-index: 10; }
@@ -192,6 +209,16 @@ input[type=text], input[type=url], input[type=number], input[type=date], select 
 </style>
 </head>
 <body>
+<nav class="nav">
+  <div class="nav-in">
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" id="tabLog" aria-selected="true">れんしゅう</button>
+      <button type="button" role="tab" id="tabScore" aria-selected="false">楽譜</button>
+    </div>
+    <button type="button" class="pill num" id="pill" hidden><i></i><span id="pillText"></span></button>
+  </div>
+</nav>
+<div id="scoreView" hidden></div>
 <div class="wrap">
   <svg class="keys" id="keys" aria-hidden="true" preserveAspectRatio="none"></svg>
 
@@ -292,6 +319,22 @@ input[type=text], input[type=url], input[type=number], input[type=date], select 
       <div class="meter"><i id="tMeter"></i></div>
       <div class="row"><button class="ghost" id="tStart">テスト開始</button><span class="small" id="tInfo"></span></div>
       <div class="testlog" id="tLog"></div>
+    </section>
+
+    <section class="panel field">
+      <h2>楽譜の合言葉</h2>
+      <p class="small">「楽譜」のタブで楽譜を開くための、家族だけの合言葉です。この端末に一度入れれば、次からは聞かれません。</p>
+      <div class="row">
+        <input type="text" id="songKey" placeholder="xxxx-xxxx-xxxx" autocomplete="off" autocapitalize="off" spellcheck="false" style="flex:1 1 180px">
+        <button class="ghost" id="songKeyTest" type="button">確かめる</button>
+      </div>
+      <span class="small" id="songKeyInfo"></span>
+    </section>
+
+    <section class="panel field">
+      <h2>設定用リンク</h2>
+      <p class="small">合言葉と記録の保存先が入ったリンクを作ります。LINE やメモに残しておくと、別の端末や、設定が消えたときも、タップするだけで元に戻せます。家族以外には教えないでください。</p>
+      <div class="row"><button class="ghost" id="setupLink" type="button">リンクをコピー</button><span class="small" id="setupInfo"></span></div>
     </section>
 
     <section class="panel field">
