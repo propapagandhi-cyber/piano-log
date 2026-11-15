@@ -189,7 +189,7 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
 .ok { border: 0; background: var(--ink); color: var(--bg); border-radius: 12px; padding: 10px 18px; font-weight: 800; }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field > span { font-size: 13px; color: var(--muted); font-weight: 700; }
-input[type=text], input[type=url], input[type=number], input[type=date], select {
+input[type=text], input[type=url], input[type=number], input[type=date], select, textarea {
   font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; width: 100%; min-width: 0; }
 .prow { display: grid; grid-template-columns: 14px minmax(0, 1fr) 36px; gap: 6px 8px; align-items: center; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .prow:last-child { border-bottom: 0; padding-bottom: 0; }
@@ -357,22 +357,18 @@ body.score .wrap { display: none; }
     </section>
 
     <section class="panel field">
-      <h2>記録の保存先（Google スプレッドシート）</h2>
-      <label class="field"><span>ウェブアプリの URL（https://script.google.com/macros/s/…/exec）</span>
-        <input type="url" id="cloudUrl" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+      <h2>記録の保存先（GitHub）</h2>
+      <label class="field"><span>接続コード（KIROKU1: で始まる文字）</span>
+        <textarea id="cloudCode" rows="2" placeholder="KIROKU1:…" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea></label>
       <div class="row"><button class="ghost" id="cloudTest">つながるか確かめる</button><span class="small" id="cloudInfo"></span></div>
-      <p class="small">未設定のあいだは、この端末の中にだけ保存します。つなげると、それまでの記録もまとめて送ります。</p>
+      <p class="small">未設定のあいだは、この端末の中にだけ保存します。つなげると、それまでの記録もまとめて送ります。空にしてとじると、接続を外します。</p>
       <details class="guide">
-        <summary>つなげかた（パソコンで 5分ほど）</summary>
+        <summary>つなげかた</summary>
         <ol>
-          <li>Google ドライブで新しいスプレッドシートを作る（名前は「ピアノ練習記録」など）</li>
-          <li>メニューの「拡張機能」→「Apps Script」を開く</li>
-          <li>最初に入っているコードを全部消して、下のボタンでコピーしたコードを貼り付け、保存する
-            <div class="row" style="margin-top:6px"><button class="ghost" id="copyCode" type="button">コードをコピー</button><span class="small" id="copyInfo"></span></div></li>
-          <li>右上の「デプロイ」→「新しいデプロイ」→ 歯車から「ウェブアプリ」を選ぶ</li>
-          <li>「次のユーザーとして実行：自分」「アクセスできるユーザー：全員」にして「デプロイ」</li>
-          <li>Google の確認画面が出たら、自分のアカウントで「許可」する（「このアプリは Google で確認されていません」と出たら「詳細」→「（安全ではないページ）に移動」）</li>
-          <li>表示された「ウェブアプリの URL」（…/exec で終わる）をコピーし、LINE やメールで自分に送って、iPad でこの欄に貼り付ける</li>
+          <li>接続コードは「習慣きろく」と同じものです。習慣きろくの 設定 →「記録の保存先」→「接続コードをコピー」でコピーできます</li>
+          <li>コピーした接続コードを LINE やメールで自分に送り、iPad でこの欄に貼り付ける</li>
+          <li>「つながるか確かめる」を押して、「つながりました」と出たら、とじる</li>
+          <li>接続コードはパスワードと同じです。家族以外には送らないでください</li>
         </ol>
       </details>
     </section>
@@ -384,6 +380,7 @@ body.score .wrap { display: none; }
 
 <script src="detector.js"></script>
 <script src="calendar.js"></script>
+<script src="ghstore.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
