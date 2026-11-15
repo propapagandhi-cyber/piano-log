@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-  const VERSION = '2.1（2026-11-15 楽譜のあとのマイク）';
+  const VERSION = '2.2（2026-11-15 平日・休日の目標）';
   const $ = (id) => document.getElementById(id);
 
   // ---------- storage ----------
@@ -15,7 +15,8 @@
   };
   const SENS_LABEL = [['strict', 'きびしめ'], ['normal', 'ふつう'], ['loose', 'ゆるめ']];
   const AUTO_OPTS = [3, 5, 10, 15];
-  const GOALS = [0, 10, 15, 20, 30, 45, 60];
+  const GOALS = [0, 10, 15, 20, 30, 45, 60, 90, 120];
+  const DEFAULT_GOAL = { w: 20, h: 45 };   // minutes on weekdays / on Saturdays, Sundays and holidays (2026-11-15)
   const NCOLORS = 5;
   const CONFIRM_MS = 15000; // a note counts as practice when another note was heard within 15 s
   const LEAD_MS = 5000;     // record from 5 s before the first piano sound…
@@ -27,12 +28,29 @@
   if (!settings) {
     settings = {
       people: [
-        { id: 'p1', name: 'おとうさん', goal: 20, color: 0 },
-        { id: 'p2', name: '長男', goal: 15, color: 1 },
-        { id: 'p3', name: '次男', goal: 15, color: 2 },
+        { id: 'p1', name: 'おとうさん', goalW: DEFAULT_GOAL.w, goalH: DEFAULT_GOAL.h, color: 0 },
+        { id: 'p2', name: '長男', goalW: DEFAULT_GOAL.w, goalH: DEFAULT_GOAL.h, color: 1 },
+        { id: 'p3', name: '次男', goalW: DEFAULT_GOAL.w, goalH: DEFAULT_GOAL.h, color: 2 },
       ],
       autoMin: 5, sens: 'normal', cloudUrl: '', updatedAt: 0,
     };
+  }
+  // before v2.2 there was one goal per person; weekday/holiday goals start from the new defaults
+  function normalizePeople(s) {
+    let changed = false;
+    for (const p of s.people) {
+      if (p.goalW === undefined || p.goalH === undefined) { p.goalW = DEFAULT_GOAL.w; p.goalH = DEFAULT_GOAL.h; changed = true; }
+      if ('goal' in p) { delete p.goal; changed = true; }
+    }
+    return changed;
+  }
+  if (normalizePeople(settings) && !firstRun) { settings.updatedAt = Date.now(); save(LS.settings, settings); }
+  if (!settings.since) {
+    // the first day of use: the earliest record, or today
+    const ks = load(LS.records, []).map((r) => r.date).sort();
+    const t = new Date();
+    settings.since = ks[0] || `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+    if (!firstRun) save(LS.settings, settings);
   }
   let records = load(LS.records, []);
   let queue = load(LS.queue, []);
@@ -53,6 +71,28 @@
     return h ? `${h}:${pad(m)}:${pad(ss)}` : `${m}:${pad(ss)}`;
   }
   function fmtMin(min) { if (min < 60) return `${min}分`; const h = Math.floor(min / 60), m = min % 60; return m ? `${h}時間${m}分` : `${h}時間`; }
+  // practice time with seconds: 0分 / 45秒 / 12分34秒 / 1時間5分12秒
+  function fmtSec(sec) {
+    const s = Math.max(0, Math.round(sec));
+    const hh = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, ss = s % 60;
+    if (!s) return '0分';
+    const tail = ss ? `${ss}秒` : '';
+    if (hh) return `${hh}時間${m}分${tail}`;
+    if (!m) return `${ss}秒`;
+    return `${m}分${tail}`;
+  }
+  // goals: weekday or holiday (Saturday, Sunday and 祝日 — calendar.js)
+  const isOff = (d) => JPCal.isOff(d);
+  const goalOn = (p, d) => (isOff(d) ? p.goalH : p.goalW) || 0;
+  function dayKind(d) {
+    const name = JPCal.holidayName(d);
+    return name || (isOff(d) ? '休日' : '平日');
+  }
+  function mondayOf(d) {
+    const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+    return x;
+  }
   const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   function h(tag, attrs, ...kids) {
     const el = document.createElement(tag);
@@ -89,13 +129,35 @@
     const del = new Set(queue.filter((q) => q.action === 'delete').map((q) => q.id));
     return records.filter((r) => !del.has(r.id));
   }
-  function minutesOn(dateKey) {
+  const secOf = (r) => (r.sec > 0 ? r.sec : (r.min || 0) * 60);
+  // seconds practiced per person on one day
+  function secondsOn(dateKey) {
     const m = new Map();
-    for (const r of liveRecords()) if (r.date === dateKey) for (const id of r.people) m.set(id, (m.get(id) || 0) + (r.min || 0));
+    for (const r of liveRecords()) if (r.date === dateKey) for (const id of r.people) m.set(id, (m.get(id) || 0) + secOf(r));
     return m;
   }
+  // a Monday-to-Sunday week: goal for the whole week, goal for the days before `upTo`, and seconds practiced
+  // goals count from the first day the app was used (no shortfall for the days before it)
+  function sinceKey() {
+    let k = settings.since || dkey(new Date());
+    for (const r of liveRecords()) if (r.date < k) k = r.date;
+    return k;
+  }
+  function weekOf(p, monday, upTo) {
+    let goalAll = 0, goalPast = 0, done = 0;
+    const since = sinceKey();
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(monday, i);
+      if (dkey(d) < since) continue;
+      const g = goalOn(p, d) * 60;
+      goalAll += g;
+      if (d < upTo) goalPast += g;
+      done += secondsOn(dkey(d)).get(p.id) || 0;
+    }
+    return { goalAll, goalPast, done };
+  }
   function streak(id) {
-    const days = new Set(liveRecords().filter((r) => r.people.includes(id) && r.min > 0).map((r) => r.date));
+    const days = new Set(liveRecords().filter((r) => r.people.includes(id) && secOf(r) > 0).map((r) => r.date));
     let d = new Date(), n = 0;
     if (!days.has(dkey(d))) d = addDays(d, -1);
     while (days.has(dkey(d))) { n++; d = addDays(d, -1); }
@@ -174,6 +236,7 @@
       save(LS.records, records);
       if (j.settings && j.settings.people && (j.settings.updatedAt || 0) > (settings.updatedAt || 0)) {
         settings = Object.assign({}, settings, j.settings, { cloudUrl: settings.cloudUrl });
+        if (normalizePeople(settings)) pushSettings();
         save(LS.settings, settings);
       }
       syncState = queue.length ? 'offline' : 'ok';
@@ -185,8 +248,8 @@
   }
   function pushSettings() {
     queue = queue.filter((q) => q.action !== 'settings');
-    const { people, autoMin, sens, updatedAt } = settings;
-    queue.push({ action: 'settings', settings: { people, autoMin, sens, updatedAt } });
+    const { people, autoMin, sens, since, updatedAt } = settings;
+    queue.push({ action: 'settings', settings: { people, autoMin, sens, since, updatedAt } });
     save(LS.queue, queue);
     flush();
   }
@@ -228,17 +291,6 @@
       });
     }
   }
-  function lightKey(freq) {
-    if (!freq) return;
-    const midi = Math.round(12 * Math.log2(freq / 440) + 69);
-    const pc = ((midi % 12) + 12) % 12;
-    const o = midi >= 60 ? 1 : 0;
-    const el = document.getElementById(`k${o}-${pc}`);
-    if (!el) return;
-    const base = el.getAttribute('class').replace(' lit', '');
-    el.setAttribute('class', base + ' lit');
-    setTimeout(() => el.setAttribute('class', base), 350);
-  }
 
   // ---------- home ----------
   function show(view) {
@@ -246,15 +298,17 @@
     window.scrollTo(0, 0);
   }
   function renderHome() {
-    const todayKey = dkey(new Date());
-    $('today').textContent = fmtDate(todayKey);
+    const now = new Date();
+    const todayKey = dkey(now);
+    $('today').textContent = `${fmtDate(todayKey)}・${dayKind(now)}`;
     $('autoMinHint').textContent = settings.autoMin;
-    const tm = minutesOn(todayKey);
+    const ts = secondsOn(todayKey);
     // players
     for (const id of [...selected]) if (!person(id)) selected.delete(id);
     $('people').replaceChildren(...settings.people.map((p) => {
-      const min = tm.get(p.id) || 0;
-      const pct = p.goal ? Math.min(100, Math.round(min / p.goal * 100)) : (min ? 100 : 0);
+      const sec = ts.get(p.id) || 0;
+      const goal = goalOn(p, now);
+      const pct = goal ? Math.min(100, Math.round(sec / (goal * 60) * 100)) : (sec ? 100 : 0);
       const st = streak(p.id);
       return h('button', {
         class: 'person', type: 'button', 'aria-pressed': selected.has(p.id) ? 'true' : 'false',
@@ -264,9 +318,11 @@
       h('span', { class: 'check', 'aria-hidden': 'true' }, svgCheck()),
       h('span', { class: 'ring', style: { '--pct': pct } }, h('span', { class: 'face', text: (p.name || '？').slice(0, 1) })),
       h('span', { class: 'name', text: p.name || '？' }),
-      h('span', { class: 'today' }, '今日 ', h('b', { class: 'num', text: min }), p.goal ? ` / ${p.goal}分` : '分'),
+      h('span', { class: 'today' }, h('b', { class: 'num', text: fmtSec(sec) })),
+      h('span', { class: 'goalline', text: goal ? (sec >= goal * 60 ? '今日の目標 たっせい' : `今日の目標 ${goal}分`) : '' }),
       h('span', { class: 'streak', text: st >= 2 ? `${st}日れんぞく` : '' }));
     }));
+    renderAlert(now);
     const sel = settings.people.filter((p) => selected.has(p.id));
     $('start').disabled = !sel.length;
     $('startSub').textContent = !sel.length ? '名前をタップしてえらんでね'
@@ -274,6 +330,41 @@
     renderWeek();
     renderHist();
     renderSync();
+  }
+  // weekly check (Monday–Sunday): this week's practice against the goals of the days before today
+  // (today's goal only counts once today is over). On Mondays: how last week ended.
+  function renderAlert(now) {
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const mon = mondayOf(today);
+    const rows = [], last = [];
+    for (const p of settings.people) {
+      const w = weekOf(p, mon, today);
+      const short = w.goalPast - w.done;
+      if (short > 0) {
+        rows.push(h('div', { class: 'arow' }, chip(p.id),
+          h('span', null, 'あと ', h('b', { class: 'num', text: fmtSec(short) }), ' 足りません',
+            h('span', { class: 'adetail num', text: `きのうまでの目標 ${fmtMin(Math.round(w.goalPast / 60))}・今週 ${fmtSec(w.done)}` }))));
+      }
+    }
+    if (today.getDay() === 1) {
+      const lastMon = addDays(mon, -7);
+      for (const p of settings.people) {
+        const w = weekOf(p, lastMon, mon);
+        const short = w.goalAll - w.done;
+        if (short > 0) {
+          last.push(h('div', { class: 'arow' }, chip(p.id),
+            h('span', null, '先週は ', h('b', { class: 'num', text: fmtSec(short) }), ' 足りませんでした',
+              h('span', { class: 'adetail num', text: `目標 ${fmtMin(Math.round(w.goalAll / 60))}・練習 ${fmtSec(w.done)}` }))));
+        }
+      }
+    }
+    const box = $('alert');
+    box.hidden = !rows.length && !last.length;
+    if (box.hidden) return;
+    box.replaceChildren(
+      h('div', { class: 'atitle', text: rows.length ? '今週の練習が足りていません' : '先週の練習が足りませんでした' }),
+      ...rows, ...last,
+      h('div', { class: 'ahint', text: rows.length ? 'ほかの日に少し長く弾いて、今週のうちに取りもどそう' : '今週はがんばろう' }));
   }
   function svgCheck() {
     const ns = 'http://www.w3.org/2000/svg';
@@ -285,28 +376,35 @@
     return s;
   }
   function renderWeek() {
-    const today = new Date();
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const mon = mondayOf(today);
     const days = [];
-    for (let i = 6; i >= 0; i--) { const d = addDays(today, -i); days.push({ d, k: dkey(d), m: minutesOn(dkey(d)) }); }
-    let max = 10;
-    for (const p of settings.people) max = Math.max(max, p.goal || 0);
+    for (let i = 0; i < 7; i++) { const d = addDays(mon, i); days.push({ d, k: dkey(d), m: secondsOn(dkey(d)) }); }
+    let max = 600;
+    for (const p of settings.people) max = Math.max(max, (p.goalW || 0) * 60, (p.goalH || 0) * 60);
     for (const x of days) for (const v of x.m.values()) max = Math.max(max, v);
-    const f = days[0].d, l = days[6].d;
-    $('weekRange').textContent = `${f.getMonth() + 1}/${f.getDate()}〜${l.getMonth() + 1}/${l.getDate()}`;
-    $('week').replaceChildren(...days.map((x, i) => h('div', { class: 'day' + (i === 6 ? ' today' : '') },
-      h('div', { class: 'bars' }, settings.people.map((p) => {
-        const v = x.m.get(p.id) || 0;
-        return h('span', { class: 'bar' + (v ? '' : ' zero'), title: `${p.name} ${v}分`, style: { '--c': colorOf(p), height: `${(v / max * 100).toFixed(1)}%` } });
-      })),
-      h('div', { class: 'dl' }, i === 6 ? '今日' : WD[x.d.getDay()], h('br'), `${x.d.getDate()}`))));
-    const weekTotal = new Map();
-    for (const x of days) for (const [id, v] of x.m) weekTotal.set(id, (weekTotal.get(id) || 0) + v);
+    const l = days[6].d;
+    $('weekRange').textContent = `${mon.getMonth() + 1}/${mon.getDate()}（月）〜${l.getMonth() + 1}/${l.getDate()}（日）`;
+    $('week').replaceChildren(...days.map((x) => {
+      const isToday = x.k === dkey(today), future = x.d > today;
+      return h('div', { class: 'day' + (isToday ? ' today' : '') + (isOff(x.d) ? ' off' : '') + (future ? ' future' : ''), title: dayKind(x.d) },
+        h('div', { class: 'bars' }, settings.people.map((p) => {
+          const v = x.m.get(p.id) || 0;
+          return h('span', { class: 'bar' + (v ? '' : ' zero'), title: `${p.name} ${fmtSec(v)}`, style: { '--c': colorOf(p), height: `${(v / max * 100).toFixed(1)}%` } });
+        })),
+        h('div', { class: 'dl' }, isToday ? '今日' : WD[x.d.getDay()], h('br'), `${x.d.getDate()}`));
+    }));
     const month = new Map();
     const mPrefix = dkey(today).slice(0, 7);
-    for (const r of liveRecords()) if (r.date.startsWith(mPrefix)) for (const id of r.people) month.set(id, (month.get(id) || 0) + r.min);
-    $('legend').replaceChildren(...settings.people.map((p) => h('span', { style: { '--c': colorOf(p) } },
-      h('i'), p.name || '？', ' ', h('b', { class: 'num', text: fmtMin(weekTotal.get(p.id) || 0) }),
-      h('span', { style: { color: 'var(--muted)' }, text: `（${today.getMonth() + 1}月 ${fmtMin(month.get(p.id) || 0)}）` }))));
+    for (const r of liveRecords()) if (r.date.startsWith(mPrefix)) for (const id of r.people) month.set(id, (month.get(id) || 0) + secOf(r));
+    $('legend').replaceChildren(...settings.people.map((p) => {
+      const w = weekOf(p, mon, today);
+      return h('div', { class: 'lrow', style: { '--c': colorOf(p) } },
+        h('i'), h('span', { class: 'lname', text: p.name || '？' }),
+        h('span', { class: 'num' }, h('b', { text: fmtSec(w.done) }), w.goalAll ? ` / ${fmtMin(Math.round(w.goalAll / 60))}` : ''),
+        h('span', { class: 'lmonth num', text: `${today.getMonth() + 1}月 ${fmtSec(month.get(p.id) || 0)}` }));
+    }));
   }
   function renderHist() {
     const list = liveRecords().slice().sort((a, b) => (b.date + b.start).localeCompare(a.date + a.start)).slice(0, 30);
@@ -327,7 +425,7 @@
       const who = r.people.length ? r.people.map((id) => chip(id, r.names)) : [h('span', { class: 'chip', text: r.names })];
       return h('div', { class: 'hrow' },
         h('div', null, h('div', { class: 'when num', text: `${fmtDate(r.date)} ${r.start}${r.how === '手で追加' ? '（手で追加）' : ''}` }), h('div', { class: 'who' }, who)),
-        h('div', { class: 'min num', text: `${r.min}分` }),
+        h('div', { class: 'min num', text: fmtSec(secOf(r)) }),
         del);
     }));
   }
@@ -511,7 +609,6 @@
   function onSessionNote(ev) {
     if (!sess) return;
     const now = Date.now();
-    lightKey(ev.f0);
     const st = $('micStatus');
     st.classList.remove('flash'); void st.offsetWidth; st.classList.add('flash');
     if (sess.prevNote && now - sess.prevNote <= CONFIRM_MS) {
@@ -533,7 +630,6 @@
   }
   function enterSessionView() {
     $('sessWho').replaceChildren(...sess.people.map((id) => chip(id)));
-    keyboardSvg($('mini'), 2, 15, 70, true);
     show('session');
   }
   function finish(how) {
@@ -561,9 +657,10 @@
     if (rec) {
       addRecord(rec);
       $('resMsg').textContent = `${names}、おつかれさま！`;
-      $('resMin').replaceChildren(String(rec.min), h('small', { text: '分' }));
-      const total = Math.round((now - s.start) / 60000);
-      $('resNote').textContent = `${rec.start}〜${rec.end} の記録です` + (total - rec.min >= 2 ? `（スタートから ${total}分のうち、ピアノが鳴っていたあいだ）` : '');
+      const m = Math.floor(rec.sec / 60), sc = rec.sec % 60;
+      $('resMin').replaceChildren(...(m ? [String(m), h('small', { text: '分' })] : []), String(sc), h('small', { text: '秒' }));
+      const totalSec = Math.round((now - s.start) / 1000);
+      $('resNote').textContent = `${rec.start}〜${rec.end} の記録です` + (totalSec - rec.sec >= 120 ? `（スタートから ${fmtSec(totalSec)}のうち、ピアノが鳴っていたあいだ）` : '');
       $('resUndo').onclick = () => { removeRecord(rec.id); toast('記録を取り消しました'); backHome(); };
     } else {
       const total = Math.round((now - s.start) / 60000);
@@ -581,15 +678,22 @@
     show('result');
   }
   function renderTally(s) {
-    const tm = minutesOn(dkey(new Date()));
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const ts = secondsOn(dkey(now));
     $('resTally').replaceChildren(...s.people.map((id) => {
       const p = person(id);
       if (!p) return '';
-      const min = tm.get(id) || 0;
+      const sec = ts.get(id) || 0;
+      const goal = goalOn(p, now) * 60;
       const st = streak(id);
+      // this week including today: how much is still missing of the goals up to and including today
+      const w = weekOf(p, mondayOf(today), addDays(today, 1));
+      const weekShort = w.goalPast - w.done;
       return h('div', { style: { '--c': colorOf(p) } }, chip(id),
-        h('b', { class: 'num', text: `今日 ${fmtMin(min)}` }),
-        p.goal && min >= p.goal ? h('span', { class: 'goal', text: '目標たっせい！' }) : (p.goal ? h('span', { class: 'small', text: `目標まで あと${p.goal - min}分` }) : ''),
+        h('b', { class: 'num', text: `今日 ${fmtSec(sec)}` }),
+        goal && sec >= goal ? h('span', { class: 'goal', text: '今日の目標たっせい！' }) : (goal ? h('span', { class: 'small num', text: `今日の目標まで あと${fmtSec(goal - sec)}` }) : ''),
+        weekShort > 0 ? h('div', { class: 'small num warnline', text: `今週は あと${fmtSec(weekShort)} 足りません` }) : '',
         st >= 2 ? h('div', { class: 'small', text: `${st}日れんぞく` }) : '');
     }));
   }
@@ -627,8 +731,6 @@
       auto = 'マイクが止まっているあいだは、自動では終わりません';
     }
     $('autoInfo').textContent = auto;
-    const m = $('meter');
-    m.style.width = `${live ? meterPct() : 0}%`;
     persistSession();
   }
   setInterval(tick, 200);
@@ -688,19 +790,20 @@
   const dlg = $('settings');
   let testing = null;
   function renderSettings() {
+    const goalSelect = (p, field, label) => {
+      const s = h('select', { 'aria-label': `${p.name}の${label}の目標`, onchange: (e) => { p[field] = Number(e.target.value); } },
+        GOALS.map((g) => h('option', { value: g, text: g ? `${g}分` : 'なし' })));
+      s.value = String(p[field] || 0);
+      return h('label', { class: 'gsel' }, h('span', { text: label }), s);
+    };
     $('pEdit').replaceChildren(...settings.people.map((p, i) => h('div', { class: 'prow', style: { '--c': colorOf(p) } },
       h('i'),
       h('input', { type: 'text', value: p.name, maxlength: 12, 'aria-label': `${i + 1}人目の名前`, oninput: (e) => { p.name = e.target.value.trim(); } }),
-      (() => {
-        const s = h('select', { 'aria-label': `${p.name}の1日の目標`, onchange: (e) => { p.goal = Number(e.target.value); } },
-          GOALS.map((g) => h('option', { value: g, text: g ? `${g}分` : 'なし' })));
-        s.value = String(p.goal || 0);
-        return s;
-      })(),
       h('button', {
         class: 'del', type: 'button', 'aria-label': `${p.name}を消す`, text: '×', disabled: settings.people.length <= 1 ? true : null,
         onclick: () => { settings.people.splice(i, 1); renderSettings(); },
-      }))));
+      }),
+      h('div', { class: 'goals' }, goalSelect(p, 'goalW', '平日'), goalSelect(p, 'goalH', '休日・祝日')))));
     $('pAdd').disabled = settings.people.length >= 6;
     $('autoSeg').replaceChildren(...AUTO_OPTS.map((m) => h('button', {
       type: 'button', 'aria-pressed': settings.autoMin === m ? 'true' : 'false', text: `${m}分`,
@@ -717,7 +820,7 @@
     const used = new Set(settings.people.map((p) => p.color));
     let c = 0;
     while (used.has(c) && c < NCOLORS - 1) c++;
-    settings.people.push({ id: 'p' + n, name: '', goal: 15, color: c });
+    settings.people.push({ id: 'p' + n, name: '', goalW: DEFAULT_GOAL.w, goalH: DEFAULT_GOAL.h, color: c });
     renderSettings();
     const inputs = $('pEdit').querySelectorAll('input');
     inputs[inputs.length - 1].focus();
